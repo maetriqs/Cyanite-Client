@@ -28,7 +28,7 @@ public class FakePay extends Module {
     private static final Pattern BAL = Pattern.compile("bal(?:ance)?(?:\\s+([A-Za-z0-9_]{1,16}))?\\s*", Pattern.CASE_INSENSITIVE);
     /** Donut's green dollar sign; the rest of its money lines are plain white. */
     private static final int DOLLAR = 0x00FC00;
-    /** A $-prefixed money amount anywhere in a line: "$ 3,574,572,218", "$ 772M". */
+    /** A $-prefixed money amount anywhere in a line: "$ 1,234,567,890", "$ 772M". */
     private static final Pattern MONEY_IN = Pattern.compile(
         "\\$\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)(?:\\s*([KkMmBbTt])(?![a-z]))?");
     /** Donut answers in chat and the action bar; both arrive well within this. */
@@ -187,7 +187,7 @@ public class FakePay extends Module {
         return message;
     }
 
-    /** The amount in Donut's "You have $ 3,574,572,218", or null for any other line. */
+    /** The amount in Donut's "You have $ 1,234,567,890", or null for any other line. */
     private static Double ownBalance(Component message) {
         String text = plain(message);
         return text.toLowerCase(Locale.ROOT).startsWith("you have") ? money(text) : null;
@@ -211,7 +211,7 @@ public class FakePay extends Module {
         };
     }
 
-    /** The line with only its amount changed, written the way the server wrote it: "772M" stays short, "3,574,572,218" stays long. */
+    /** The line with only its amount changed, written the way the server wrote it: "772M" stays short, "1,234,567,890" stays long. */
     private static Component withAmount(Component message, double amount) {
         String text = plain(message);
         String value = text.substring(SidebarText.valueStart(text)).strip();
@@ -238,7 +238,7 @@ public class FakePay extends Module {
         return SidebarText.rewrite(original, BountyBalance.compact(fakeBalance), false);
     }
 
-    /** Full integer with commas, matching DonutSMP's own-balance format: "3,632,273,906". */
+    /** Full integer with commas, matching DonutSMP's own-balance format: "1,234,567,890". */
     private static String fullNumber(double v) {
         NumberFormat nf = NumberFormat.getNumberInstance(Locale.ROOT);
         nf.setMaximumFractionDigits(0);

@@ -23,9 +23,8 @@ import java.util.Locale;
  * the GUI tab and the map follows.
  *
  * <p>Each square is one region, centred on 0, 0 for the middle one (region 5). The default size,
- * 50,000 blocks a side (25,000 each way from a square's middle), puts X -108103, Z -134161 in
- * region 75 near its lower left, just as Donut's own map showed it; it's a setting in case the
- * regions change.
+ * 50,000 blocks a side (25,000 each way from a square's middle), lines the squares up with
+ * Donut's own map; it's a setting in case the regions change.
  */
 public class RegionMap extends HudElement {
     private static final int GAP = 1;
