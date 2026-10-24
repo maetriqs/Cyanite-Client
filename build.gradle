@@ -1,0 +1,99 @@
+plugins {
+	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+	id 'maven-publish'
+}
+
+repositories {
+	// Litematica and malilib, straight from Modrinth.
+	exclusiveContent {
+		forRepository {
+			maven {
+				name = "Modrinth"
+				url = "https://api.modrinth.com/maven"
+			}
+		}
+		filter {
+			includeGroup "maven.modrinth"
+		}
+	}
+}
+
+loom {
+	splitEnvironmentSourceSets()
+
+	mods {
+		"cyanite_client" {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+}
+
+dependencies {
+	// To change the versions see the gradle.properties file
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	mappings loom.officialMojangMappings()
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+	// Fabric API. This is technically optional, but you probably want it anyway.
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// Litematica is optional: Area Miner reads schematic placements from it when it's installed.
+	// Compile against it only; nothing of it ships in Cyanite's jar.
+	// Modrinth's ids for litematica 0.26.16 and malilib 0.27.20 (1.21.11).
+	modCompileOnly "maven.modrinth:litematica:mengBR9D"
+	modCompileOnly "maven.modrinth:malilib:loabWpyU"
+}
+
+processResources {
+	def version = project.version
+	// The GitHub repository the in-game updater takes releases from. GitHub's own builds fill in
+	// the repository they run in when it's left blank, so a fork's builds update from the fork.
+	def repo = (project.findProperty("github_repo") ?: "").toString().trim() ?: providers.environmentVariable("GITHUB_REPOSITORY").getOrElse("")
+	inputs.property "version", version
+	inputs.property "repo", repo
+
+	filesMatching("fabric.mod.json") {
+		expand "version": version, "repo": repo
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 21
+}
+
+java {
+	// Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task
+	// if it is present.
+	// If you remove this line, sources will not be generated.
+	withSourcesJar()
+
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+jar {
+	def projectName = project.name
+	inputs.property "projectName", projectName
+
+	from("LICENSE") {
+		rename { "${it}_$projectName"}
+	}
+}
+
+// configure the maven publication
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			from components.java
+		}
+	}
+
+	// See https://docs.gradle.org/current/userguide/publishing_maven.html for information on how to set up publishing.
+	repositories {
+		// Add repositories to publish to here.
+		// Notice: This block does NOT have the same function as the block in the top level.
+		// The repositories here will be used for publishing your artifact, not for
+		// retrieving dependencies.
+	}
+}

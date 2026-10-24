@@ -1,0 +1,48 @@
+# Builds Cyanite on every push and pull request. A push to main whose version (in
+# gradle.properties) hasn't been released yet also publishes a GitHub release with the jar,
+# which is what everyone's in-game updater picks up.
+
+name: build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v6
+      - name: validate gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+      - name: setup jdk
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'microsoft'
+      - name: make gradle wrapper executable
+        run: chmod +x ./gradlew
+      - name: build
+        run: ./gradlew build
+      - name: capture build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: Artifacts
+          path: build/libs/
+      - name: release new version
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(grep '^version=' gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          if gh release view "v$version" > /dev/null 2>&1; then
+            echo "v$version is already released; bump version in gradle.properties to release again."
+            exit 0
+          fi
+          gh release create "v$version" "build/libs/cyanite_client-$version.jar" \
+            --title "Cyanite $version" \
+            --target "$GITHUB_SHA" \
+            --generate-notes

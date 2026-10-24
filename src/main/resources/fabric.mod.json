@@ -1,0 +1,38 @@
+{
+	"schemaVersion": 1,
+	"id": "cyanite_client",
+	"version": "${version}",
+	"name": "Cyanite Client",
+	"description": "A Fabric utility client for Minecraft 1.21.11.",
+	"authors": [
+		"Cyanite"
+	],
+	"contact": {
+		"homepage": "https://github.com/${repo}",
+		"sources": "https://github.com/${repo}",
+		"issues": "https://github.com/${repo}/issues"
+	},
+	"license": "GPL-3.0-or-later",
+	"icon": "assets/cyanite_client/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.cyanite.CyaniteClient"
+		],
+		"client": [
+			"com.cyanite.client.CyaniteClientMod"
+		]
+	},
+	"mixins": [
+		{
+			"config": "cyanite_client.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}

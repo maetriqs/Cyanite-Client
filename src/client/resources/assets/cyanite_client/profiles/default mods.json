@@ -1,0 +1,584 @@
+{
+  "version": 1,
+  "gui": {
+    "Font": "Segoe UI",
+    "UI scale": "Auto",
+    "Accent": "#4C58FF",
+    "Glow": 1.45,
+    "Corner radius": 4.0,
+    "Background blur": true,
+    "Animations": true
+  },
+  "modules": {
+    "Kill Aura": {
+      "enabled": false,
+      "settings": {
+        "Range": 3.5,
+        "Timing": "Cooldown",
+        "CPS": 10.0,
+        "Priority": "Distance",
+        "Players": true,
+        "Hostiles": true,
+        "Passives": false,
+        "Invisibles": false,
+        "Through walls": false,
+        "Rotate": true,
+        "Weapon only": false,
+        "Pause while eating": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Velocity": {
+      "enabled": false,
+      "settings": {
+        "Horizontal": 0.0,
+        "Vertical": 0.0,
+        "Explosions": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Criticals": {
+      "enabled": false,
+      "settings": {
+        "Only full charge": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Auto Totem": {
+      "enabled": false,
+      "settings": {
+        "Mode": "Always",
+        "Health": 10.0,
+        "Delay": 0.0,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Trigger Bot": {
+      "enabled": false,
+      "settings": {
+        "Players": true,
+        "Hostiles": true,
+        "Passives": false,
+        "Charge": 1.0,
+        "Weapon only": false,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Auto Armor": {
+      "enabled": false,
+      "settings": {
+        "Delay": 2.0,
+        "Keep elytra": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Sprint": {
+      "enabled": false,
+      "settings": {
+        "Mode": "Omni",
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Flight": {
+      "enabled": false,
+      "settings": {
+        "Mode": "Velocity",
+        "Speed": 1.0,
+        "Vertical speed": 0.6,
+        "Anti kick": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Boat Fly": {
+      "enabled": false,
+      "settings": {
+        "Speed": 20.0,
+        "Vertical speed": 10.0,
+        "Fall speed": 0.0,
+        "Steer with camera": true,
+        "Anti kick": true,
+        "Ignore setbacks": false,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Speed": {
+      "enabled": false,
+      "settings": {
+        "Mode": "Strafe",
+        "Speed": 1.4,
+        "Air control": 0.95,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "No Fall": {
+      "enabled": false,
+      "settings": {
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Step": {
+      "enabled": false,
+      "settings": {
+        "Height": 1.0,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Auto Walk": {
+      "enabled": false,
+      "settings": {
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Jesus": {
+      "enabled": false,
+      "settings": {
+        "Lava": false,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Spider": {
+      "enabled": false,
+      "settings": {
+        "Speed": 0.2,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "No Slow": {
+      "enabled": false,
+      "settings": {
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Safe Walk": {
+      "enabled": false,
+      "settings": {
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Fullbright": {
+      "enabled": true,
+      "settings": {
+        "Mode": "Gamma",
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "ESP": {
+      "enabled": true,
+      "settings": {
+        "Players": true,
+        "Player color": "#5AFF7D",
+        "Hostiles": false,
+        "Hostile color": "#FFA43A",
+        "Passives": false,
+        "Passive color": "#5BE07A",
+        "Items": false,
+        "Item color": "#E6E6E6",
+        "Invisibles": true,
+        "Shape": "Box",
+        "Fill opacity": 0.18,
+        "Line width": 2.0,
+        "Glow": true,
+        "Tracers": false,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Storage ESP": {
+      "enabled": false,
+      "settings": {
+        "Chests": true,
+        "Chest color": "#F5C542",
+        "Ender chests": false,
+        "Ender color": "#A35CFF",
+        "Shulkers": true,
+        "Dye colors": true,
+        "Shulker color": "#FF6BD3",
+        "Barrels": true,
+        "Barrel color": "#A8743F",
+        "Hoppers": false,
+        "Hopper color": "#9AA3AF",
+        "Furnaces": false,
+        "Furnace color": "#D9D9D9",
+        "Dispensers": false,
+        "Dispenser color": "#6FB7D6",
+        "Range": 512.0,
+        "Shape": "Box",
+        "Fill opacity": 0.18,
+        "Line width": 2.0,
+        "Glow": true,
+        "Tracers": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Search": {
+      "enabled": false,
+      "settings": {
+        "Diamond": true,
+        "Ancient debris": true,
+        "Emerald": true,
+        "Gold": false,
+        "Iron": false,
+        "Redstone": false,
+        "Lapis": false,
+        "Copper": false,
+        "Coal": false,
+        "Quartz": false,
+        "Spawners": true,
+        "Range": 4.0,
+        "Shape": "Box",
+        "Fill opacity": 0.18,
+        "Line width": 2.0,
+        "Glow": true,
+        "Tracers": false,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Xray": {
+      "enabled": false,
+      "settings": {
+        "Fullbright": true,
+        "Diamond": true,
+        "Ancient debris": true,
+        "Emerald": true,
+        "Gold": true,
+        "Iron": true,
+        "Redstone": true,
+        "Lapis": true,
+        "Copper": true,
+        "Coal": true,
+        "Quartz": true,
+        "Spawners": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Nametags": {
+      "enabled": true,
+      "settings": {
+        "Players": true,
+        "Hostiles": true,
+        "Passives": false,
+        "Health": true,
+        "Distance": true,
+        "Ping": false,
+        "Items": true,
+        "Background": true,
+        "Scale": 1.0,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Freecam": {
+      "enabled": false,
+      "settings": {
+        "Speed": 2.5,
+        "Bind": 342,
+        "Show in list": true
+      }
+    },
+    "Breadcrumbs": {
+      "enabled": false,
+      "settings": {
+        "Length": 500.0,
+        "Color": "#4C9BFF",
+        "Line width": 2.0,
+        "Glow": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "No Hurt Cam": {
+      "enabled": false,
+      "settings": {
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Fast Place": {
+      "enabled": false,
+      "settings": {
+        "Delay": 0.0,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Auto Respawn": {
+      "enabled": false,
+      "settings": {
+        "Delay": 0.0,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Auto Eat": {
+      "enabled": false,
+      "settings": {
+        "Hunger": 14.0,
+        "Avoid bad food": true,
+        "Switch back": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Auto Fish": {
+      "enabled": false,
+      "settings": {
+        "Recast delay": 15.0,
+        "Auto cast": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Chest Stealer": {
+      "enabled": false,
+      "settings": {
+        "Delay": 2.0,
+        "Close when empty": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Inventory Move": {
+      "enabled": false,
+      "settings": {
+        "Jump": true,
+        "Sprint": true,
+        "Sneak": false,
+        "In click GUI": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Auto Tool": {
+      "enabled": false,
+      "settings": {
+        "Switch back": true,
+        "Save tools": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Auto Mine": {
+      "enabled": false,
+      "settings": {
+        "Mode": "Drill",
+        "Drill size": 3.0,
+        "Length": 0.0,
+        "Turn speed": 1.8,
+        "Randomness": 0.1,
+        "Lava check": 3.0,
+        "Stop at water": false,
+        "Stop at drops": true,
+        "Stop when full": false,
+        "Save tool": true,
+        "Stop when hurt": true,
+        "Toast": true,
+        "Sound": true,
+        "Flash taskbar": true,
+        "Bind": 88,
+        "Show in list": true
+      }
+    },
+    "Fast Break": {
+      "enabled": false,
+      "settings": {
+        "Delay": 0.0,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Scaffold": {
+      "enabled": false,
+      "settings": {
+        "Auto switch": true,
+        "Switch back": true,
+        "Swing": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Timer": {
+      "enabled": false,
+      "settings": {
+        "Speed": 1.5,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Anti AFK": {
+      "enabled": false,
+      "settings": {
+        "Interval": 30.0,
+        "Jump": true,
+        "Swing": true,
+        "Rotate": false,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Base Finder": {
+      "enabled": false,
+      "settings": {
+        "Rotated deepslate": true,
+        "Min rotated": 1.0,
+        "Stone anomalies": true,
+        "Min stone": 4.0,
+        "Blob intrusions": true,
+        "Plain stone in blobs": false,
+        "Light sources": false,
+        "Light min depth": 6.0,
+        "Mined corridors": false,
+        "Corridor length": 10.0,
+        "Ores \u0026 resources": false,
+        "Structures": false,
+        "Natural features": false,
+        "Kelp height": 12.0,
+        "Dripstone length": 7.0,
+        "Radius": 16.0,
+        "Chunks per tick": 8.0,
+        "Single color": "#FFB347",
+        "Multiple color": "#FF4D4D",
+        "Shape": "Outline",
+        "Fill opacity": 0.22,
+        "Mark blocks": false,
+        "Tracers": false,
+        "Labels": "Full",
+        "Label scale": 1.0,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Scoreboard Spoof": {
+      "enabled": false,
+      "settings": {
+        "Line mode": "Value only",
+        "Title": "cheats",
+        "Line 1": "",
+        "Line 2": "",
+        "Line 3": "",
+        "Line 4": "",
+        "Line 5": "",
+        "Line 6": "",
+        "Line 7": "",
+        "Line 8": "",
+        "Hide numbers": false,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Spawner Finder": {
+      "enabled": false,
+      "settings": {
+        "Skeleton": true,
+        "Zombie": false,
+        "Spider": false,
+        "Cave spider": false,
+        "Blaze": false,
+        "Other mobs": false,
+        "Unknown type": false,
+        "Color": "#E8E8E8",
+        "Range": 256.0,
+        "Labels": true,
+        "Toast": true,
+        "Sound": true,
+        "Flash taskbar": true,
+        "Shape": "Box",
+        "Fill opacity": 0.18,
+        "Line width": 2.0,
+        "Glow": true,
+        "Tracers": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Relog": {
+      "enabled": false,
+      "settings": {
+        "Delay": 0.0,
+        "Bind": 82,
+        "Show in list": true
+      }
+    },
+    "Depth Alert": {
+      "enabled": false,
+      "settings": {
+        "Y level": -2.0,
+        "Trigger": "Going down",
+        "Toast": true,
+        "Sound": true,
+        "Flash taskbar": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    },
+    "Base Alert": {
+      "enabled": false,
+      "settings": {
+        "Threshold": 8.0,
+        "Markers": true,
+        "Color": "#6BE675",
+        "Toast": true,
+        "Sound": true,
+        "Flash taskbar": true,
+        "Bind": -1,
+        "Show in list": true
+      }
+    }
+  },
+  "hud": {
+    "settings": {
+      "Scale": "Auto",
+      "Text shadow": true,
+      "Hide with F3": true
+    },
+    "elements": {
+      "Watermark": {
+        "enabled": true,
+        "anchor": "LEFT TOP",
+        "x": 4,
+        "y": 6,
+        "settings": {
+          "Version": false,
+          "FPS": true,
+          "Ping": true,
+          "Time": false,
+          "Background": true
+        }
+      },
+      "Arraylist": {
+        "enabled": true,
+        "anchor": "RIGHT TOP",
+        "x": 2,
+        "y": 2,
+        "settings": {
+          "Sort": "Length",
+          "Color": "Accent",
+          "Module info": true,
+          "Background": true,
+          "Side bar": true,
+          "Glow": true
+        }
+      }
+    }
+  }
+}
