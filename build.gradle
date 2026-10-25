@@ -43,6 +43,10 @@ dependencies {
 	// Modrinth's ids for litematica 0.26.16 and malilib 0.27.20 (1.21.11).
 	modCompileOnly "maven.modrinth:litematica:mengBR9D"
 	modCompileOnly "maven.modrinth:malilib:loabWpyU"
+
+	// Mod Menu is optional too: with it installed, its Configure button opens Cyanite's menu and its
+	// update badge comes from Cyanite's own check. Compiled against only, like Litematica.
+	modCompileOnly "maven.modrinth:modmenu:17.0.0"
 }
 
 processResources {
@@ -96,4 +100,10 @@ publishing {
 		// The repositories here will be used for publishing your artifact, not for
 		// retrieving dependencies.
 	}
+}
+
+// Local-only dev tooling (test worlds, compat runs). It lives outside the repo, so on GitHub this does nothing.
+def devScript = file("../dev/dev.gradle")
+if (devScript.exists()) {
+	apply from: devScript
 }

@@ -5,6 +5,7 @@ import com.cyanite.client.modules.world.area.Paths;
 import com.cyanite.client.modules.world.area.Region;
 import com.cyanite.client.render.Render3D;
 import com.cyanite.client.system.Category;
+import com.cyanite.client.system.Depths;
 import com.cyanite.client.system.HumanAim;
 import com.cyanite.client.system.Module;
 import com.cyanite.client.system.Modules;
@@ -54,6 +55,8 @@ import java.util.Map;
  * Takes you down to bedrock and closes the way behind you, so nobody can follow the hole. It
  * starts by checking the column under you, block by block down to bedrock, from the chunk data
  * you already have: a cave, lava or water on the way means a hole someone could find, or worse.
+ * Where the server makes up what's underground (Donut does under Y 16 while you're up top) it
+ * checks down to there, and the rest block by block on the way down.
  * If yours isn't clean it looks around for the nearest column that is and walks you there.
  *
  * <p>Then it digs straight down, one block at a time, with the same human aim and held attack
@@ -380,7 +383,12 @@ public class BedrockBurrow extends Module {
      */
     String check(BlockPos top) {
         int bottom = bottomY();
+        // Under this the server sends made-up rock (Donut: everything under Y 16 while you're up
+        // top), with no bedrock to see: nothing to judge until you're down there, where each block
+        // gets checked as you dig.
+        int hidden = Depths.floorAt(mc.level, top.getX(), top.getZ());
         for (int y = top.getY(); y >= mc.level.getMinY(); y--) {
+            if (hidden > 0 && y < hidden) return null;
             BlockPos p = new BlockPos(top.getX(), y, top.getZ());
             if (!mc.level.hasChunkAt(p)) return "chunks that aren't loaded";
             BlockState state = mc.level.getBlockState(p);

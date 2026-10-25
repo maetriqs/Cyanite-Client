@@ -13,6 +13,7 @@ import com.cyanite.client.render.Projection;
 import com.cyanite.client.render.Render3D;
 import com.cyanite.client.system.Category;
 import com.cyanite.client.system.ChunkScanner;
+import com.cyanite.client.system.Depths;
 import com.cyanite.client.system.Module;
 import com.cyanite.client.system.Modules;
 import com.cyanite.client.system.Notify;
@@ -839,26 +840,9 @@ public class ChunkFinder extends Module {
         return new boolean[] {deep >= 2, air};
     }
 
-    /**
-     * Where the real world starts in this chunk, as far as you can see: the top of the made-up
-     * layers a server sends in place of what's down there (nothing but deepslate, and the bedrock
-     * floor), or Y 0 where nothing's made up. Donut's go up to Y 16 while you're up top; go down
-     * among them and the real ones come in, and this drops back to Y 0.
-     */
+    /** Where the real world starts in this chunk: the top of the made-up layers, or Y 0 (see {@link Depths}). */
     private static int floor(LevelChunk chunk) {
-        LevelChunkSection[] sections = chunk.getSections();
-        int top = chunk.getMinY();
-        for (int i = 0; i < sections.length; i++) {
-            LevelChunkSection section = sections[i];
-            if (section.hasOnlyAir()) break;
-            int[] other = {0};
-            section.getStates().count((st, n) -> {
-                if (n > 0 && !st.is(Blocks.DEEPSLATE) && !st.is(Blocks.BEDROCK)) other[0] += n;
-            });
-            if (other[0] > 0) break;
-            top = chunk.getMinY() + (i + 1) * 16;
-        }
-        return Math.max(0, top);
+        return Depths.floor(chunk);
     }
 
     // ---- Sealed shafts

@@ -3,7 +3,7 @@
 	"id": "cyanite_client",
 	"version": "${version}",
 	"name": "Cyanite Client",
-	"description": "A Fabric utility client for Minecraft 1.21.11.",
+	"description": "A utility client for Minecraft 1.21.11, built around DonutSMP: base hunting, automation, PvP and a clean HUD. Press Insert to open it.",
 	"authors": [
 		"Cyanite"
 	],
@@ -21,6 +21,9 @@
 		],
 		"client": [
 			"com.cyanite.client.CyaniteClientMod"
+		],
+		"modmenu": [
+			"com.cyanite.client.modmenu.ModMenuIntegration"
 		]
 	},
 	"mixins": [

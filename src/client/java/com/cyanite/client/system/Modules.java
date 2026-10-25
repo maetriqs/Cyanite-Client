@@ -16,7 +16,6 @@ import com.cyanite.client.modules.combat.KillAura;
 import com.cyanite.client.modules.combat.TriggerBot;
 import com.cyanite.client.modules.donut.AutoSell;
 import com.cyanite.client.modules.donut.BaseAlert;
-import com.cyanite.client.modules.donut.ChunkFinder;
 import com.cyanite.client.modules.donut.BountyBalance;
 import com.cyanite.client.modules.donut.FakePay;
 import com.cyanite.client.modules.donut.DrillLogger;
@@ -198,7 +197,9 @@ public final class Modules {
         register(new com.cyanite.client.modules.misc.Clips());
         register(new com.cyanite.client.modules.misc.BaseGuard());
 
-        register(new ChunkFinder());
+        // Chunk Finder is parked: its code stays in modules/donut, not registered (so it's off the menu and
+        // its packet hooks do nothing) until it's redone.
+        register(new com.cyanite.client.modules.donut.SusChunkFinder());
         register(new FakePay());
         register(new ScoreboardSpoof());
         register(new SpawnerFinder());

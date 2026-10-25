@@ -32,6 +32,7 @@ import java.time.Duration;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -60,25 +61,38 @@ public final class Updater {
     private static volatile Path staged;
     private static volatile Path running;
     private static volatile String stagedVersion;
+    /** What this launch's check found, for anything else that shows updates (Mod Menu); null if it didn't look or couldn't tell. */
+    private static final CompletableFuture<Release> FOUND = new CompletableFuture<>();
+
+    /** The newest release: its version, its page, and whether it's newer than this jar. */
+    public record Release(String version, String page, boolean newer) {
+    }
 
     private Updater() {
     }
 
+    /** This launch's check, once it's done: null if updates are off, it couldn't reach GitHub, or there's nothing released. */
+    public static CompletableFuture<Release> found() {
+        return FOUND;
+    }
+
     /** Looks for a new release in the background. Called once the game's up. */
     public static void start() {
-        if (GuiSettings.UPDATES.is("Off")) return;
         FabricLoader loader = FabricLoader.getInstance();
-        if (loader.isDevelopmentEnvironment()) return;
         ModContainer mod = loader.getModContainer(MOD_ID).orElse(null);
-        if (mod == null) return;
-        String repo = repo(mod);
-        if (repo == null) return;
+        String repo = mod == null ? null : repo(mod);
+        if (GuiSettings.UPDATES.is("Off") || loader.isDevelopmentEnvironment() || repo == null) {
+            FOUND.complete(null);
+            return;
+        }
 
         Thread thread = new Thread(() -> {
             try {
                 check(mod, repo);
             } catch (Exception e) {
                 LOGGER.warn("Couldn't check for a Cyanite update", e);
+            } finally {
+                FOUND.complete(null);
             }
         }, "Cyanite updater");
         thread.setDaemon(true);
@@ -96,7 +110,9 @@ public final class Updater {
         String tag = release.get("tag_name").getAsString();
         String latest = tag.startsWith("v") ? tag.substring(1) : tag;
         String page = release.get("html_url").getAsString();
-        if (Version.parse(latest).compareTo(mod.getMetadata().getVersion()) <= 0) {
+        boolean newer = Version.parse(latest).compareTo(mod.getMetadata().getVersion()) > 0;
+        FOUND.complete(new Release(latest, page, newer));
+        if (!newer) {
             clearUpdateDir();
             return;
         }
