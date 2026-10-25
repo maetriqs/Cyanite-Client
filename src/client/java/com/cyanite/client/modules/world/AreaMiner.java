@@ -2026,7 +2026,7 @@ public class AreaMiner extends Module {
         int start = plan.layerStart(current);
         int len = plan.laneLength(current);
         int lanes = plan.lanes(current);
-        double y = plan.base(current) + 0.06;
+        double y = plan.floor(current) + 0.06;
         int done = Theme.fade(ROUTE_COLOR, 0.3f);
         int active = ROUTE_COLOR;
         int ahead = Theme.fade(ROUTE_COLOR, 0.65f);

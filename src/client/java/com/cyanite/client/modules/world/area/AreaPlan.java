@@ -18,8 +18,9 @@ import java.util.List;
  *
  * <p>Cells are numbered in the order they should be dug (their rank), starting from the corner
  * nearest you. The last lane and layer are pulled back inside the area rather than hanging out
- * of it, so no square ever needs to reach past the edge. Each cell keeps a count of the blocks
- * it still has, which is what progress is measured from.
+ * of it, so no square ever needs to reach past the edge (see {@link Lattice#layers} for the
+ * one height where that can't be helped). Each cell keeps a count of the blocks it still has,
+ * which is what progress is measured from.
  */
 public final class AreaPlan {
     public final AreaTarget target;
@@ -65,6 +66,8 @@ public final class AreaPlan {
         final int[] bases;
         final int[] layerLo;
         final int[] layerHi;
+        /** Where you stand to dig each layer. */
+        final int[] floors;
         /** The rank of this box's first cell; its cells follow on from there, layer by layer. */
         int firstRank;
 
@@ -95,12 +98,16 @@ public final class AreaPlan {
                 laneHi[i] = Math.min(lanes[i] + half, lMax);
             }
 
-            bases = bases(region.minY(), region.maxY(), size);
-            layerLo = new int[bases.length];
-            layerHi = new int[bases.length];
-            for (int j = 0; j < bases.length; j++) {
-                layerHi[j] = j == 0 ? region.maxY() : layerLo[j - 1] - 1;
-                layerLo[j] = Math.max(bases[j], region.minY());
+            int[][] layers = layers(region.minY(), region.maxY(), size);
+            bases = new int[layers.length];
+            layerLo = new int[layers.length];
+            layerHi = new int[layers.length];
+            floors = new int[layers.length];
+            for (int j = 0; j < layers.length; j++) {
+                bases[j] = layers[j][0];
+                layerLo[j] = layers[j][1];
+                layerHi[j] = layers[j][2];
+                floors[j] = layers[j][3];
             }
         }
 
@@ -117,19 +124,46 @@ public final class AreaPlan {
             return out.stream().mapToInt(Integer::intValue).toArray();
         }
 
-        /** Floors of each layer, top first, the last pulled up so it ends at the bottom. */
-        private static int[] bases(int lo, int hi, int size) {
+        /**
+         * The layers in the order they're dug, each as {square's floor, lowest row, highest row,
+         * where you stand}. Full layers go from the top down. A lane hit is aimed at the square's
+         * middle row, so every layer has to own that row: a layer thinner than that would aim at
+         * a block that's already gone. Rows left under the last full layer get a square on the
+         * floor that reaches up into the dug-out layer above; too few rows for that (one, with a
+         * 3x3) and they're shared with the layer above instead, half each.
+         *
+         * <p>Only one height can't be done without reaching past the area: a row or two more than
+         * one square (4 high, with a 3x3). The square goes on the floor and the rows over it come
+         * after, hit from the finished floor; the drill takes them only where it's open above, and
+         * your other tool does the rest. Left at the bottom, they'd always be your other tool's
+         * (there's no open air under a floor), picking at the floor you stand on.
+         */
+        static int[][] layers(int lo, int hi, int size) {
+            int half = (size - 1) / 2;
+            int height = hi - lo + 1;
             // Too thin for a full layer: start at the bottom, where the open air above makes the
             // square's overhang harmless more often than solid ground below would.
-            if (hi - lo + 1 <= size) return new int[] {lo};
-            List<Integer> out = new ArrayList<>();
+            if (height <= size) return new int[][] {{lo, lo, hi, lo}};
+            if (height <= size + half) {
+                int top = lo + size;
+                return new int[][] {{lo, lo, top - 1, lo}, {top - half, top, hi, lo}};
+            }
+            List<int[]> out = new ArrayList<>();
             int b = hi - size + 1;
             while (b >= lo) {
-                out.add(b);
+                out.add(new int[] {b, b, b + size - 1, b});
                 b -= size;
             }
-            if (out.getLast() > lo) out.add(lo);
-            return out.stream().mapToInt(Integer::intValue).toArray();
+            int last = out.getLast()[0];
+            if (last - lo > half) {
+                out.add(new int[] {lo, lo, last - 1, lo});
+            } else if (last > lo) {
+                out.removeLast();
+                int split = lo + (last + size - lo) / 2;
+                out.add(new int[] {split, split, last + size - 1, split});
+                out.add(new int[] {lo, lo, split - 1, lo});
+            }
+            return out.toArray(new int[0][]);
         }
 
         public BlockPos pos(int a, int across, int y) {
@@ -217,6 +251,11 @@ public final class AreaPlan {
     /** The floor of the cell's layer: the square it's dug with runs from here up. */
     public int base(int rank) {
         return lattice(rank).bases[cellLayer[rank]];
+    }
+
+    /** Where you stand to dig the cell: its layer's floor, or the area's for rows over a finished floor. */
+    public int floor(int rank) {
+        return lattice(rank).floors[cellLayer[rank]];
     }
 
     public int layer(int rank) {
