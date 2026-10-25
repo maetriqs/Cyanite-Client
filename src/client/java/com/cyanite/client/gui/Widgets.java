@@ -78,4 +78,22 @@ final class Widgets {
         Render2D.rect(g, kx, ty + s, knob, knob, knob / 2, Theme.fade(Theme.mix(Theme.TEXT_DIM, 0xFFFFFFFF, on), alpha));
         Render2D.end(g);
     }
+
+    /** The search icon: a ring with a handle, centred on (x, y) in UI units. */
+    static void magnifier(GuiGraphics g, int x, int y, int color, float a) {
+        int s = Render2D.scale();
+        int ring = Math.round(3.3f * s);
+        int thick = Math.max(1, Math.round(0.9f * s));
+        int icx = x * s - s / 2;
+        int icy = y * s - s / 2;
+        Render2D.pixels(g);
+        Render2D.rect(g, icx - ring, icy - ring, ring * 2, ring * 2, ring, color);
+        Render2D.rect(g, icx - ring + thick, icy - ring + thick, (ring - thick) * 2, (ring - thick) * 2, ring - thick, Theme.fade(Theme.FIELD, a));
+        g.pose().pushMatrix();
+        g.pose().translate(icx + ring * 0.62f, icy + ring * 0.62f);
+        g.pose().rotate((float) Math.PI / 4);
+        g.fill(0, -thick / 2, Math.round(2.8f * s), thick - thick / 2, color);
+        g.pose().popMatrix();
+        Render2D.end(g);
+    }
 }

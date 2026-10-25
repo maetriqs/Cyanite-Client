@@ -27,6 +27,10 @@ abstract class Page {
     void onShow() {
     }
 
+    /** Where the tab bar was last drawn, for pages that put something beside it. */
+    void tabBar(Rect bounds) {
+    }
+
     abstract void render(GuiGraphics g, int mouseX, int mouseY, float dt, float alpha);
 
     boolean mouseClicked(double mouseX, double mouseY, int button) {

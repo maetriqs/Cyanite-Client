@@ -332,7 +332,12 @@ final class AreaMinerPage extends Page {
         long mined = m.mined();
         long left = m.left();
         row(g, x, RUN_W, rowY, "Mined", active ? String.format(Locale.ROOT, "%,d of %,d", mined, mined + left) : "-", Theme.TEXT_DIM, a);
-        String hits = m.edgeHits() > 0 ? String.format(Locale.ROOT, "%,d  (%,d other tool)", m.hits(), m.edgeHits()) : String.format(Locale.ROOT, "%,d", m.hits());
+        String hits = String.format(Locale.ROOT, "%,d", m.hits());
+        // Extras alongside: single blocks with the other tool, and blocks put down building back up after falls.
+        List<String> extras = new ArrayList<>();
+        if (m.edgeHits() > 0) extras.add(String.format(Locale.ROOT, "%,d other tool", m.edgeHits()));
+        if (m.built() > 0) extras.add(String.format(Locale.ROOT, "%,d built up", m.built()));
+        if (!extras.isEmpty()) hits += "  (" + String.join(", ", extras) + ")";
         row(g, x, RUN_W, rowY + ROW, "Hits", active ? hits : "-", Theme.TEXT_DIM, a);
         long skipped = m.skipped();
         row(g, x, RUN_W, rowY + ROW * 2, "Skipped", active ? String.format(Locale.ROOT, "%,d", skipped) : "-",

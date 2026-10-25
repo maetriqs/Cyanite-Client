@@ -30,16 +30,22 @@ import it.unimi.dsi.fastutil.longs.LongSets;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.ClickType;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.EmptyBlockGetter;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.AABB;
@@ -69,6 +75,10 @@ import java.util.Random;
  * without a swing. Lava is dug around from whichever side is still safe; whatever stays too
  * close to it is left and counted as skipped. Blocks the drill can't take without cutting
  * outside the area go to another tool from your hotbar, if you have one.
+ *
+ * <p>If the floor opens into a cave and you fall in, it builds back up: it walks back if it can,
+ * and otherwise jumps and puts blocks under itself (stone, cobble, dirt and the like from your
+ * inventory) until it's back on the floor it fell from, then carries on.
  */
 public class AreaMiner extends Module {
     private static final long MAX_VOLUME = 4_000_000;
@@ -79,6 +89,15 @@ public class AreaMiner extends Module {
     private static final long MINE_TIMEOUT = 20_000_000_000L;
     private static final long OFF_TARGET_TIMEOUT = 2_500_000_000L;
     private static final long WALK_STUCK = 5_000_000_000L;
+    /** Building back up: this long without gaining a block and it tries somewhere else. */
+    private static final long CLIMB_STUCK = 6_000_000_000L;
+    private static final int CLIMB_TRIES = 3;
+    /** Damage this soon after landing from a fall is the fall's. */
+    private static final long FALL_DAMAGE_WINDOW = 1_500_000_000L;
+    /** fillerSlot(): one's on its way into the hotbar; there are none; the hotbar's all tools. */
+    private static final int FILLER_MOVING = -1;
+    private static final int FILLER_NONE = -2;
+    private static final int FILLER_NO_ROOM = -3;
     private static final long EMPTY_CONFIRM = 1_500_000_000L;
     private static final long PREVIEW_REFRESH = 1_000_000_000L;
     private static final int TOOL_RESERVE = 10;
@@ -106,7 +125,7 @@ public class AreaMiner extends Module {
 
     public enum State { IDLE, RUNNING, PAUSED }
 
-    private enum Phase { CHOOSE, WALK, MINE, SETTLE }
+    private enum Phase { CHOOSE, WALK, MINE, SETTLE, CLIMB }
 
     private record Job(int rank, BlockPos center, Direction.Axis axis, Direction face, Vec3 aim, BlockPos stand,
                        boolean edge, int slot, int gain) {
@@ -120,6 +139,7 @@ public class AreaMiner extends Module {
     private final SliderSetting randomness = add(new SliderSetting("Randomness", 0.5, 0, 1, 0.05).percent());
     private final SliderSetting lavaGap = add(new SliderSetting("Lava gap", 2, 1, 4, 1).format(v -> (int) v + (v == 1 ? " block" : " blocks")));
     private final BoolSetting avoidWater = add(new BoolSetting("Avoid water", false));
+    private final BoolSetting buildUp = add(new BoolSetting("Build back up", true));
     private final ModeSetting edgeBlocks = add(new ModeSetting("Edge blocks", "Other tool", List.of("Other tool", "Skip")));
     private final BoolSetting pauseHurt = add(new BoolSetting("Pause when hurt", true));
     private final BoolSetting pauseFull = add(new BoolSetting("Pause when full", true));
@@ -205,6 +225,24 @@ public class AreaMiner extends Module {
     private final int[] learnTries = new int[DrillModel.Kind.values().length];
     /** Whether you've been told what the drill cuts, per kind of hit. */
     private final boolean[] toldShape = new boolean[DrillModel.Kind.values().length];
+
+    // Falls, and building back up after one.
+    /** Your feet's block Y when you were last on the ground, and whether you've left it since. */
+    private int groundY = Integer.MIN_VALUE;
+    private boolean airborne;
+    /** The floor to get back up to after a fall the route didn't plan; MIN_VALUE when there's none. */
+    private int climbTo = Integer.MIN_VALUE;
+    /** When the last fall long enough to hurt landed. */
+    private long landedAt;
+    /** Where it's building up, the hotbar slot it builds with, and the floor under this jump. */
+    private BlockPos column;
+    private int fillSlot = -1;
+    private int jumpBase;
+    private boolean placedThisJump;
+    private Vec3 placeAim;
+    private long climbProgressAt;
+    private int climbFails;
+    private int built;
 
     private AreaTarget preview;
     private String previewError;
@@ -340,6 +378,10 @@ public class AreaMiner extends Module {
         state = State.RUNNING;
         status = "Resuming";
         lastHealth = mc.player.getHealth();
+        // Wherever you are now is the ground; a fall it was building up from still stands.
+        groundY = Integer.MIN_VALUE;
+        airborne = false;
+        climbFails = 0;
         resetPhase();
         aim.idle();
     }
@@ -459,6 +501,12 @@ public class AreaMiner extends Module {
         lastHealth = player.getHealth();
         lastLavaNotice = 0;
         lastLavaNoticeAt = null;
+        groundY = Integer.MIN_VALUE;
+        airborne = false;
+        climbTo = Integer.MIN_VALUE;
+        landedAt = 0;
+        climbFails = 0;
+        built = 0;
         drillSlot = player.getInventory().getSelectedSlot();
         drillStack = player.getMainHandItem().copy();
         resetPhase();
@@ -609,6 +657,7 @@ public class AreaMiner extends Module {
             return;
         }
 
+        if (trackFall(player, now)) return;
         String hazard = hazard(player);
         if (hazard != null) {
             pause(hazard);
@@ -620,6 +669,7 @@ public class AreaMiner extends Module {
             case WALK -> tickWalk(player, now);
             case MINE -> tickMine(player, now);
             case SETTLE -> tickSettle(now);
+            case CLIMB -> tickClimb(player, now);
         }
     }
 
@@ -638,6 +688,15 @@ public class AreaMiner extends Module {
         if (fallingNear(player)) {
             if (fallingOverhead(player)) steering = away(player);
             return;
+        }
+        // Fell somewhere it didn't mean to: back up to that floor before anything else.
+        if (climbTo != Integer.MIN_VALUE) {
+            if (player.getBlockY() >= climbTo) {
+                climbTo = Integer.MIN_VALUE;
+            } else {
+                startClimb(player, now);
+                return;
+            }
         }
 
         Job next = null;
@@ -1212,6 +1271,251 @@ public class AreaMiner extends Module {
         finish(plan.skipped() == 0 ? "Done" : lava ? "Done, around lava" : "Done, some blocks out of reach");
     }
 
+    // ---- Building back up after a fall
+
+    /**
+     * Watches for falls the route didn't plan: landing two or more blocks below where you last
+     * stood, anywhere but a spot on the path being walked (a planned drop is at most three
+     * blocks, onto the path). After one it builds back up to that floor before going on, so a
+     * cave opening under the drill can't strand it, or leave the layer above half dug.
+     * @return true if it paused instead.
+     */
+    private boolean trackFall(LocalPlayer player, long now) {
+        if (!player.onGround()) {
+            airborne = true;
+            return false;
+        }
+        int y = player.getBlockY();
+        int from = groundY;
+        boolean landed = airborne;
+        airborne = false;
+        groundY = y;
+        if (!landed || from == Integer.MIN_VALUE || from - y < 2) return false;
+        if (from - y > 3) landedAt = now;
+        if (phase == Phase.CLIMB || plannedLanding(player.blockPosition())) return false;
+        if (!buildUp.get()) {
+            pause("Fell " + (from - y) + " blocks: get back up to Y " + from + ", then Resume");
+            return true;
+        }
+        climbTo = Math.max(climbTo, from);
+        climbFails = 0;
+        status = "Fell " + (from - y) + " blocks: getting back up";
+        resetPhase();
+        return false;
+    }
+
+    /** Landed where the route meant to drop to: a spot on the path being walked. */
+    private boolean plannedLanding(BlockPos feet) {
+        if (phase != Phase.WALK || path == null) return false;
+        for (int i = Math.max(0, pathIndex - 2); i < path.size(); i++) {
+            BlockPos p = path.get(i);
+            if (p.getY() == feet.getY() && Math.abs(p.getX() - feet.getX()) <= 1 && Math.abs(p.getZ() - feet.getZ()) <= 1) return true;
+        }
+        return false;
+    }
+
+    /** Picks where to build up from, walking back instead if there's a way, and gets the blocks into the hotbar. */
+    private void startClimb(LocalPlayer player, long now) {
+        if (player.isInWater()) {
+            pause("Fell into water: get out, then Resume");
+            return;
+        }
+        BlockPos feet = player.blockPosition();
+        Region around = new Region(feet.getX() - 10, feet.getY() - 3, feet.getZ() - 10, feet.getX() + 10, climbTo + 2, feet.getZ() + 10);
+        Paths reach = Paths.search(mc.level, feet, around, plan.target, 6_000);
+        BlockPos best = null;
+        double bestCost = Double.MAX_VALUE;
+        BlockPos.MutableBlockPos q = new BlockPos.MutableBlockPos();
+        for (long key : reach.spots()) {
+            BlockPos spot = BlockPos.of(key);
+            if (spot.getY() >= climbTo) {
+                // There's a way to walk back up: no blocks needed, the usual route takes it from here.
+                climbTo = Integer.MIN_VALUE;
+                status = "Walking back up";
+                return;
+            }
+            BlockPos floor = spot.below();
+            if (!mc.level.getBlockState(floor).isCollisionShapeFullBlock(mc.level, floor)) continue;
+            boolean clear = true;
+            for (int y = spot.getY(); y <= climbTo + 1 && clear; y++) clear = Paths.clearAir(mc.level, q.set(spot.getX(), y, spot.getZ()));
+            if (!clear) continue;
+            // Every block built is a jump, so a higher start is worth a few steps.
+            double cost = reach.distance(spot) + 4.0 * (climbTo - spot.getY());
+            if (cost < bestCost) {
+                bestCost = cost;
+                best = spot;
+            }
+        }
+        if (best == null) {
+            pause("Fell to Y " + feet.getY() + " with no clear way to build up to Y " + climbTo + ": get out, then Resume");
+            return;
+        }
+
+        int slot = fillerSlot(player);
+        if (slot == FILLER_MOVING) return;
+        if (slot == FILLER_NONE) {
+            pause("Fell to Y " + feet.getY() + " and there are no blocks to build back up with: get out, then Resume");
+            return;
+        }
+        if (slot == FILLER_NO_ROOM) {
+            pause("No hotbar room for blocks to build back up with: free a slot, then Resume");
+            return;
+        }
+        column = best;
+        fillSlot = slot;
+        path = reach.pathTo(best);
+        pathIndex = 1;
+        placeAim = null;
+        placedThisJump = true;
+        climbProgressAt = now;
+        status = "Building back up to Y " + climbTo;
+        enter(Phase.CLIMB);
+    }
+
+    private void tickClimb(LocalPlayer player, long now) {
+        BlockPos feet = player.blockPosition();
+        if (player.onGround() && feet.getY() >= climbTo) {
+            climbTo = Integer.MIN_VALUE;
+            column = null;
+            status = "Back up";
+            resetPhase();
+            return;
+        }
+        if (now - climbProgressAt > CLIMB_STUCK) {
+            if (++climbFails >= CLIMB_TRIES) {
+                pause("Couldn't build back up to Y " + climbTo + ": get out, then Resume");
+                return;
+            }
+            resetPhase();
+            return;
+        }
+        Inventory inventory = player.getInventory();
+        if (!filler(inventory.getItem(fillSlot))) {
+            // That stack ran out: find the next.
+            resetPhase();
+            return;
+        }
+
+        if (feet.getX() != column.getX() || feet.getZ() != column.getZ()) {
+            // Not on the spot (yet, or knocked off it): walk there.
+            if (!player.onGround()) {
+                steering = Input.EMPTY;
+                return;
+            }
+            if (path == null || pathIndex >= path.size()) {
+                steering = walk(player, Vec3.atBottomCenterOf(column.atY(feet.getY())), false, false);
+                return;
+            }
+            BlockPos node = path.get(pathIndex);
+            Vec3 target = Vec3.atBottomCenterOf(node);
+            double horizontal = Math.hypot(target.x - player.getX(), target.z - player.getZ());
+            boolean up = node.getY() > player.getY() + 0.5;
+            if (horizontal < 0.3 && (!up || player.getY() > node.getY() - 0.2)) {
+                pathIndex++;
+                climbProgressAt = now;
+                return;
+            }
+            aimAt(target.add(0, eyeHeight(), 0));
+            steering = walk(player, target, player.onGround() && up && horizontal < 1.4, nearDrop(feet));
+            return;
+        }
+
+        if (inventory.getSelectedSlot() != fillSlot) {
+            inventory.setSelectedSlot(fillSlot);
+            slotReadyAt = now + 120_000_000L;
+        }
+        if (player.onGround()) {
+            jumpBase = feet.getY();
+            if (placeAim == null || placedThisJump) {
+                // Down at the block you're on, just ahead of its middle the way you already face, so
+                // only your pitch moves (straight down, the way you face would swing about), and a
+                // little to one side or the other like a hand would be.
+                Vec3 ahead = Vec3.directionFromRotation(0, player.getYRot());
+                double side = (random.nextDouble() - 0.5) * 0.2;
+                placeAim = new Vec3(column.getX() + 0.5 + ahead.x * 0.2 - ahead.z * side, jumpBase,
+                    column.getZ() + 0.5 + ahead.z * 0.2 + ahead.x * side);
+                placedThisJump = false;
+            }
+            aimAt(placeAim);
+            Vec3 middle = Vec3.atBottomCenterOf(feet);
+            if (Math.hypot(middle.x - player.getX(), middle.z - player.getZ()) > 0.15) {
+                // Onto the middle first, so the jump goes straight up.
+                steering = walk(player, middle, false, false);
+                return;
+            }
+            if (!Paths.clearAir(mc.level, feet.above(2))) {
+                // Something overhead after all: somewhere else.
+                climbFails++;
+                resetPhase();
+                return;
+            }
+            boolean ready = now >= slotReadyAt && aim.error() < 4;
+            steering = new Input(false, false, false, false, ready, false, false);
+            return;
+        }
+
+        // In the air: once your feet are above where the block goes, put it under you.
+        steering = Input.EMPTY;
+        aimAt(placeAim);
+        if (placedThisJump || player.getY() < jumpBase + 1.05) return;
+        if (!(mc.hitResult instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return;
+        if (!hit.getBlockPos().equals(column.atY(jumpBase - 1)) || hit.getDirection() != Direction.UP) return;
+        if (mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit).consumesAction()) {
+            player.swing(InteractionHand.MAIN_HAND);
+            placedThisJump = true;
+            built++;
+            climbProgressAt = now;
+            status = "Building back up: Y " + (jumpBase + 1) + " of " + climbTo;
+        }
+    }
+
+    /**
+     * A hotbar slot holding blocks to build up with, or why there isn't one. Blocks in the main
+     * inventory are swapped into an empty slot (or one with no tool in it) first; never the drill's.
+     */
+    private int fillerSlot(LocalPlayer player) {
+        Inventory inventory = player.getInventory();
+        int best = -1;
+        for (int i = 0; i < 9; i++) {
+            if (i == drillSlot || !filler(inventory.getItem(i))) continue;
+            if (best < 0 || inventory.getItem(i).getCount() > inventory.getItem(best).getCount()) best = i;
+        }
+        if (best >= 0) return best;
+
+        int from = -1;
+        for (int j = 9; j < 36; j++) {
+            if (!filler(inventory.getItem(j))) continue;
+            if (from < 0 || inventory.getItem(j).getCount() > inventory.getItem(from).getCount()) from = j;
+        }
+        if (from < 0) return FILLER_NONE;
+        int into = -1;
+        for (int i = 0; i < 9 && into < 0; i++) {
+            if (i != drillSlot && inventory.getItem(i).isEmpty()) into = i;
+        }
+        for (int i = 8; i >= 0 && into < 0; i--) {
+            if (i != drillSlot && !inventory.getItem(i).isDamageableItem()) into = i;
+        }
+        if (into < 0) return FILLER_NO_ROOM;
+        if (player.containerMenu != player.inventoryMenu) return FILLER_MOVING;
+        mc.gameMode.handleInventoryMouseClick(player.inventoryMenu.containerId, from, into, ClickType.SWAP, player);
+        return FILLER_MOVING;
+    }
+
+    /** Plain full blocks nobody minds losing: stone and its kinds, cobble, netherrack, dirt. */
+    private static boolean filler(ItemStack stack) {
+        if (!(stack.getItem() instanceof BlockItem item)) return false;
+        BlockState state = item.getBlock().defaultBlockState();
+        boolean plain = state.is(BlockTags.BASE_STONE_OVERWORLD) || state.is(BlockTags.BASE_STONE_NETHER) || state.is(BlockTags.DIRT)
+            || state.is(Blocks.COBBLESTONE) || state.is(Blocks.COBBLED_DEEPSLATE) || state.is(Blocks.MOSSY_COBBLESTONE)
+            || state.is(Blocks.END_STONE) || state.is(Blocks.CALCITE);
+        return plain && state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+    }
+
+    /** Blocks put down building back up after falls, this run. */
+    public int built() {
+        return built;
+    }
+
     // ---- Walking
 
     private void tickWalk(LocalPlayer player, long now) {
@@ -1649,7 +1953,9 @@ public class AreaMiner extends Module {
         float health = player.getHealth();
         boolean hurt = health < lastHealth;
         lastHealth = health;
-        if (pauseHurt.get() && hurt) return "You took damage";
+        // Hurt by a fall it's about to build back up from is no reason to stop, unless it left you low.
+        boolean fallHurt = buildUp.get() && System.nanoTime() - landedAt < FALL_DAMAGE_WINDOW && health > 6;
+        if (pauseHurt.get() && hurt && !fallHurt) return "You took damage";
         if (pauseFull.get() && player.getInventory().getFreeSlot() < 0) return "Inventory full";
 
         if (drillSlot >= 0 && !drillStack.isEmpty()) {

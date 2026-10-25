@@ -26,6 +26,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -34,6 +35,7 @@ import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.tags.BlockTags;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.animal.axolotl.Axolotl;
@@ -61,6 +63,7 @@ import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.lighting.LayerLightEventListener;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -108,42 +111,96 @@ import java.util.UUID;
  * </ul>
  * The first time it sees each kind of leak it says so, and Leak report sums them up.
  *
- * <p>Clues from above: a dead-straight shaft down to Y 0, rotated deepslate (worldgen only stands
- * it up straight), box tunnels just above Y 0, ladders and cut deepslate near it, and kelp grown
- * past what worldgen leaves, which only happens where someone stays for hours.
+ * <p>Clues from above, looked for down to where the real world starts: Y 0, or the top of the
+ * made-up layers where a server sends some (Donut fills everything under Y 16 with plain deepslate
+ * while you're up top, so its ways down end at Y 16 as far as you can see).
+ *
+ * <p>A base worth finding hides its way in, so what counts is hiding: a sealed
+ * shaft (a column of cobble, cobbled deepslate or other fill straight down through natural rock to
+ * the depths, where someone dug down and filled it in behind them), a capped shaft (open down to
+ * the depths but closed over at the top), a patched seafloor (gravel and sand can't be put back, so
+ * a way in under the sea is plugged with stone, dirt or cobble that sits in the gravel, over a hole
+ * dug down to the depths that's left open or filled back in), deepslate on its side patching a
+ * hole just above the depths (worldgen only stands it up straight), and kelp grown past what
+ * worldgen leaves, which only happens where someone stays for hours.
+ *
+ * <p>Digging in the open counts the other way. A shaft open down to the depths, tunnels near them, torches
+ * and ladders: someone mined there, and anything under it is gone already or never was. Those
+ * chunks are skipped (Skip dug-out chunks), unless someone's down there right now (sounds, blocks
+ * changing, a player staying), since a base that's in use hasn't been raided.
+ *
+ * <p>Ways in, watched. Players are sent to you only while they're up among the real layers, so
+ * another player near you who drops out of sight right over the depths (still online, not out of
+ * range) has gone down a way in, and one who appears there has come up one. And a way in already
+ * found (a capped or sealed shaft, a patched seafloor) is watched: its lid opened, closed or swapped
+ * since means somebody's using it.
+ *
+ * <p>Checked chunks. Go down among the made-up layers and the server sends the real chunks round
+ * you; each one that comes through real is marked checked (with a base or without), and kept, so
+ * you can see where you've been and how far round you it shows.
  *
  * <p>Each chunk's clues add up to a score; on Strict a chunk needs a strong clue, or two kinds.
  * Natural structures are left out: spawners, sculk and trial chambers nearby make chests and
- * rooms not count; strongholds and mineshafts do the same for ladders and tunnels.
+ * rooms not count; strongholds, mineshafts and dungeons do the same for shafts, tunnels and fill.
  */
 public class ChunkFinder extends Module {
     private static final int BAND = 24;
     private static final int SHAFT_MIN = 10;
     private static final int TUNNEL_MIN = 14;
+    /** A sealed shaft: this many layers of fill or more, starting this close to Y 0. */
+    private static final int SEAL_MIN = 8;
+    private static final int SEAL_BOTTOM = 3;
+    private static final int SEAL_TOP = 72;
+    /** Deepslate on its side only means a patched hole this close to Y 0; higher up it's someone building. */
+    private static final int PATCH_TOP = 12;
+    /** Layers of a way down under the seabed that may be wide: the sand and gravel it starts in, a cave it crosses. */
+    private static final int WIDE_MAX = 8;
     private static final double STRUCTURE_REACH = 24;
     private static final double NATURAL_REACH = 16;
     private static final long HEARD_FOR = 20 * 60_000;
     /** A player below Y 0 this long, within a few blocks of one spot, is home. */
     private static final long STAY_MS = 45_000;
+    /** How near another player has to be for their going down (or coming up) to count: well inside the range players are sent in. */
+    private static final double VANISH_REACH = 40;
+    /** How far over the depths they can be when they go: right at the bottom of the way down. */
+    private static final int VANISH_ABOVE = 3;
+    /** How far they have to have come down, lately, for going out of sight to be going down (not teleporting home from a cave). */
+    private static final double VANISH_DROP = 1.5;
+    private static final long TRAIL_MS = 3_000;
+    private static final long VANISH_FOR = 6 * 3_600_000L;
+    /** Everyone appears at once in a world you've just come into, or after a teleport of your own; someone who's just joined appears out of nowhere too. */
+    private static final long SETTLE_MS = 5_000;
+    /** A way in used this long ago still counts. */
+    private static final long USED_FOR = 7 * 86_400_000L;
+    private static final int WATCH_MAX = 16;
+    /** Checked chunks drawn this far round you. */
+    private static final int CHECKED_DRAWN = 16;
+    private static final int CHECKED_COLOR = 0xFF51CF66;
     private static final int MAX_PER_CLUE = 64;
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
     enum Clue {
         CONTAINER("hidden container or workstation|hidden containers and workstations", 30, true, 1, 0xFFFF4D4D),
-        REVEALED("block seen below|blocks seen below", 26, true, 1, 0xFFFF6B9D),
+        USED("way in used|ways in used", 30, true, 1, 0xFFFF6B9D, false, true),
+        VANISHED("player seen going down or coming up|players seen going down or coming up", 24, true, 1, 0xFFFF8787, false, true),
+        REVEALED("block seen below|blocks seen below", 26, true, 1, 0xFFFF6B9D, false, true),
         TORCHLIGHT("torch glowing below|torches glowing below", 24, true, 1, 0xFFFFB347),
         KEPT("thing kept below Y 0|things kept below Y 0", 24, true, 1, 0xFFFF6B6B),
-        SHAFT("shaft into the hidden layers|shafts into the hidden layers", 24, true, 1, 0xFF4DD4FF),
-        STAYING("player staying below Y 0|players staying below Y 0", 22, true, 1, 0xFFFF8787),
+        SEALED("sealed shaft to the depths|sealed shafts to the depths", 26, true, 1, 0xFF4DD4FF),
+        CAPPED("capped shaft to the depths|capped shafts to the depths", 24, true, 1, 0xFF4DD4FF),
+        SEAFLOOR("patched seafloor|patched seafloor", 24, true, 1, 0xFF3BC9DB),
+        STAYING("player staying below Y 0|players staying below Y 0", 22, true, 1, 0xFFFF8787, false, true),
         LAMP("lamp glowing below|lamps glowing below", 18, true, 2, 0xFFFFE066),
-        HEARD("sound from below|sounds from below", 18, true, 1, 0xFFE879F9),
-        ROTATED("rotated deepslate|rotated deepslate", 10, true, 2, 0xFF9B8CFF),
+        HEARD("sound from below|sounds from below", 18, true, 1, 0xFFE879F9, false, true),
+        ROTATED("patched hole at the depths|patched holes at the depths", 10, false, 1, 0xFF9B8CFF),
         ROOM("room below Y 0|rooms below Y 0", 14, false, 1, 0xFF74C0FC),
         CHESTS("hidden chest|hidden chests", 12, false, 2, 0xFFFFA94D),
-        TUNNEL("straight tunnel|straight tunnels", 12, false, 1, 0xFF5CE0A0),
+        TUNNEL("tunnel near the depths|tunnels near the depths", 0, false, 1, 0xFF8A8F98, true, false),
         ANIMALS("animal below Y 0|animals below Y 0", 10, false, 3, 0xFFFFD43B),
-        PLACED("placed block near Y 0|placed blocks near Y 0", 5, false, 2, 0xFFFFA94D),
-        KELP("grown kelp|grown kelp", 8, false, 4, 0xFF63E6BE);
+        KELP("grown kelp|grown kelp", 8, false, 4, 0xFF63E6BE),
+        // Digging in the open: counts against a chunk, not for it.
+        SHAFT("open shaft to the depths|open shafts to the depths", 0, false, 1, 0xFF8A8F98, true, false),
+        PLACED("torch or ladder near the depths|torches and ladders near the depths", 0, false, 1, 0xFF8A8F98, true, false);
 
         /** "one|many". */
         final String label;
@@ -153,13 +210,23 @@ public class ChunkFinder extends Module {
         /** Less than this in one chunk says nothing. */
         final double least;
         final int color;
+        /** Someone dug here in the open: the base was raided, or there never was one. */
+        final boolean dug;
+        /** Someone's down there right now: a base in use, dug out or not. */
+        final boolean live;
 
         Clue(String label, double weight, boolean strong, double least, int color) {
+            this(label, weight, strong, least, color, false, false);
+        }
+
+        Clue(String label, double weight, boolean strong, double least, int color, boolean dug, boolean live) {
             this.label = label;
             this.weight = weight;
             this.strong = strong;
             this.least = least;
             this.color = color;
+            this.dug = dug;
+            this.live = live;
         }
     }
 
@@ -195,7 +262,41 @@ public class ChunkFinder extends Module {
      * One look at a chunk: its clues, the natural structures in it, whether its depths are hidden,
      * and whether air or light came through from them (leaks, if they're hidden).
      */
-    private record Scan(List<Hit> hits, List<BlockPos> structures, boolean hidden, boolean air, boolean lit, long at) {
+    private record Scan(List<Hit> hits, List<BlockPos> structures, boolean hidden, boolean air, boolean lit, long at, int floor) {
+        /** Its depths came through as they are: nothing made up. */
+        boolean real() {
+            return floor == 0 && !hidden;
+        }
+    }
+
+    /** Another player in sight: who, where, whether they're dying (then they go from sight, but not down), and how high they've been lately. */
+    private static final class Seen {
+        String name;
+        Vec3 pos;
+        boolean dying;
+        /** {when, y}, the last few seconds of it. */
+        final Deque<double[]> trail = new ArrayDeque<>();
+
+        double highest() {
+            double top = pos.y;
+            for (double[] t : trail) top = Math.max(top, t[1]);
+            return top;
+        }
+    }
+
+    /** Someone going down a way in, or coming up one. */
+    private record Went(BlockPos pos, String what, long at) {
+    }
+
+    /** A block that closes a way in: which kind of way, and what it was last seen as. */
+    private static final class Watch {
+        final String way;
+        String state;
+
+        Watch(String way, String state) {
+            this.way = way;
+            this.state = state;
+        }
     }
 
     /** A sound or event from below Y 0. */
@@ -215,6 +316,11 @@ public class ChunkFinder extends Module {
         String reasons;
         List<Hit> hits = List.of();
         boolean live;
+        /** Its ways in, watched for being opened, closed or swapped. */
+        final Map<BlockPos, Watch> watched = new LinkedHashMap<>();
+        /** The last time one was, and how. */
+        long usedAt;
+        String used;
 
         Found(String where, int cx, int cz, double score, String reasons) {
             this.where = where;
@@ -235,11 +341,21 @@ public class ChunkFinder extends Module {
         Blocks.INFESTED_MOSSY_STONE_BRICKS, Blocks.INFESTED_CRACKED_STONE_BRICKS, Blocks.INFESTED_DEEPSLATE, Blocks.END_PORTAL_FRAME,
         Blocks.RAIL, Blocks.OAK_FENCE, Blocks.DARK_OAK_FENCE, Blocks.SPRUCE_FENCE, Blocks.REINFORCED_DEEPSLATE, Blocks.TRIAL_SPAWNER,
         Blocks.VAULT, Blocks.SCULK_CATALYST, Blocks.SCULK_SHRIEKER, Blocks.SUSPICIOUS_GRAVEL);
-    /** Blocks a player puts down on the way to something underneath. */
+    /** What a miner puts up on the way down: lights and ladders. */
     private static final Set<Block> PLACED = Set.of(Blocks.LADDER, Blocks.SCAFFOLDING, Blocks.TORCH, Blocks.WALL_TORCH, Blocks.SOUL_TORCH,
-        Blocks.SOUL_WALL_TORCH, Blocks.LANTERN, Blocks.SOUL_LANTERN, Blocks.COBBLED_DEEPSLATE, Blocks.COBBLED_DEEPSLATE_SLAB,
-        Blocks.COBBLED_DEEPSLATE_STAIRS, Blocks.COBBLED_DEEPSLATE_WALL, Blocks.POLISHED_DEEPSLATE, Blocks.DEEPSLATE_BRICKS,
-        Blocks.DEEPSLATE_TILES, Blocks.CHISELED_DEEPSLATE);
+        Blocks.SOUL_WALL_TORCH, Blocks.LANTERN, Blocks.SOUL_LANTERN);
+    /** What a hole gets filled back in with: what digging drops, and the dirt and gravel on hand. */
+    private static final Set<Block> FILL = Set.of(Blocks.COBBLESTONE, Blocks.COBBLED_DEEPSLATE, Blocks.NETHERRACK, Blocks.DIRT,
+        Blocks.COARSE_DIRT, Blocks.GRAVEL, Blocks.ANDESITE, Blocks.DIORITE, Blocks.GRANITE, Blocks.TUFF);
+    /** What the bottom of the sea is made of. */
+    private static final Set<Block> SEABED = Set.of(Blocks.GRAVEL, Blocks.SAND, Blocks.RED_SAND, Blocks.CLAY, Blocks.SUSPICIOUS_SAND,
+        Blocks.SUSPICIOUS_GRAVEL, Blocks.MUD);
+    /** What a hole in it gets plugged with, since gravel and sand won't stay put. */
+    private static final Set<Block> PLUG = Set.of(Blocks.STONE, Blocks.DIRT, Blocks.COARSE_DIRT, Blocks.COBBLESTONE, Blocks.COBBLED_DEEPSLATE,
+        Blocks.DEEPSLATE, Blocks.NETHERRACK, Blocks.ANDESITE, Blocks.DIORITE, Blocks.GRANITE, Blocks.TUFF, Blocks.SMOOTH_STONE,
+        Blocks.STONE_BRICKS, Blocks.OBSIDIAN, Blocks.END_STONE, Blocks.BLACKSTONE);
+    /** Fill nothing natural puts in a column: one of these in it, at least a few times, and it was placed. */
+    private static final Set<Block> PLAYER_FILL = Set.of(Blocks.COBBLESTONE, Blocks.COBBLED_DEEPSLATE, Blocks.NETHERRACK);
     /** Block entities nothing natural makes below Y 0. */
     private static final Set<String> PLAYER_BLOCK_ENTITIES = Set.of("furnace", "blast_furnace", "smoker", "hopper", "dropper", "beacon",
         "shulker_box", "ender_chest", "enchanting_table", "brewing_stand", "barrel", "sign", "hanging_sign", "banner", "bed", "skull",
@@ -300,9 +416,14 @@ public class ChunkFinder extends Module {
     private final BoolSetting kept = add(new BoolSetting("Things below Y 0", true));
     private final BoolSetting staying = add(new BoolSetting("Players staying", true));
     private final BoolSetting heard = add(new BoolSetting("Sounds from below", true));
-    private final BoolSetting digs = add(new BoolSetting("Shafts and tunnels", true));
-    private final BoolSetting rotated = add(new BoolSetting("Rotated deepslate", true));
-    private final BoolSetting placed = add(new BoolSetting("Placed blocks", true));
+    private final BoolSetting vanish = add(new BoolSetting("Players going down", true));
+    private final BoolSetting watch = add(new BoolSetting("Watch ways in", true));
+    private final BoolSetting checked = add(new BoolSetting("Checked chunks", true));
+    private final BoolSetting sealedShafts = add(new BoolSetting("Sealed shafts", true));
+    private final BoolSetting seafloor = add(new BoolSetting("Patched seafloor", true));
+    private final BoolSetting rotated = add(new BoolSetting("Patched holes", true));
+    /** Open shafts, tunnels, torches and ladders near Y 0: raided or empty, so skipped. */
+    private final BoolSetting skipDug = add(new BoolSetting("Skip dug-out chunks", true));
     private final BoolSetting kelp = add(new BoolSetting("Grown kelp", true));
     private final BoolSetting markClues = add(new BoolSetting("Mark clues", true));
     private final BoolSetting beams = add(new BoolSetting("Beams", true));
@@ -329,6 +450,20 @@ public class ChunkFinder extends Module {
     /** Leaks from chunks not looked at yet: whether they're leaks depends on whether the chunk came through hidden. */
     private final Map<Long, Set<Leak>> unconfirmed = new HashMap<>();
     private final List<Found> found = new ArrayList<>();
+    /** Other players last tick, and when each turned up in the tab list. */
+    private final Map<UUID, Seen> others = new HashMap<>();
+    private final Map<UUID, Long> listed = new HashMap<>();
+    private final Deque<Went> went = new ArrayDeque<>();
+    private Vec3 lastMe;
+    private long settledAt;
+    /** Chunks seen real, by world: when first. */
+    private final Map<String, Map<Long, Long>> checkedAt = new HashMap<>();
+    private boolean checkedDirty;
+    /** Made-up depths seen here: only then does a real chunk mean you've checked it. */
+    private boolean hiding;
+    private int shownRadius = -1;
+    private int pendingRadius = -1;
+    private long pendingSince;
     private final BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
     private boolean loaded;
     private ClientLevel lastLevel;
@@ -342,6 +477,10 @@ public class ChunkFinder extends Module {
                 String where = where();
                 found.removeIf(f -> f.where.equals(where));
                 save();
+                if (checkedAt.remove(where) != null) {
+                    checkedDirty = true;
+                    saveChecked();
+                }
                 Notify.send("Chunk Finder", "Forgot the chunks found here", false, false, false);
             }
             forget.set(false);
@@ -381,6 +520,8 @@ public class ChunkFinder extends Module {
 
     @Override
     protected void onEnable() {
+        settledAt = System.currentTimeMillis();
+        others.clear();
         ChunkScanner.rescanAll();
     }
 
@@ -388,12 +529,24 @@ public class ChunkFinder extends Module {
     private void looked(long key, Scan scan) {
         if (!isEnabled()) return;
         scans.put(key, scan);
+        if (!hiding && (scan.floor() > 0 || scan.hidden())) {
+            // The first made-up chunk: the real ones already in were checked too.
+            hiding = true;
+            for (Map.Entry<Long, Scan> e : scans.entrySet()) markChecked(e.getKey(), e.getValue());
+        }
+        markChecked(key, scan);
         if (scan.hidden() && hiddenView()) {
             if (scan.air()) confirmed(Leak.AIR, key);
             if (scan.lit()) confirmed(Leak.LIGHT, key);
         }
         Set<Leak> waiting = unconfirmed.remove(key);
         if (waiting != null && scan.hidden()) for (Leak l : waiting) confirmed(l, key);
+    }
+
+    /** A chunk that came through real, where the server makes things up: you've seen what's really down there. */
+    private void markChecked(long key, Scan scan) {
+        if (!checked.get() || !hiding || !scan.real() || mc.level.dimension() != Level.OVERWORLD) return;
+        if (checkedAt.computeIfAbsent(where(), k -> new HashMap<>()).putIfAbsent(key, System.currentTimeMillis()) == null) checkedDirty = true;
     }
 
     @Override
@@ -409,6 +562,8 @@ public class ChunkFinder extends Module {
         // A different world is noticed on the next tick and clears it.
         scans.clear();
         stays.clear();
+        others.clear();
+        saveChecked();
     }
 
     // ---- Leaks
@@ -463,7 +618,13 @@ public class ChunkFinder extends Module {
             natural.clear();
             trials.clear();
             unconfirmed.clear();
+            others.clear();
+            went.clear();
+            hiding = checkedAt.containsKey(where());
+            shownRadius = -1;
+            settledAt = System.currentTimeMillis();
         }
+        watchPlayers(System.currentTimeMillis());
         ChunkPos center = mc.player.chunkPosition();
         int r = radius.get().intValue() + 1;
         // A chunk's look lasts as long as the chunk's loaded; ones come into range get asked for.
@@ -481,7 +642,106 @@ public class ChunkFinder extends Module {
         trials.keySet().removeIf(key -> far(key, center, r + 4));
         unconfirmed.keySet().removeIf(key -> far(key, center, r + 4));
 
-        if (++tick % 20 == 0) judge();
+        if (++tick % 20 == 0) {
+            judge();
+            reveal(System.currentTimeMillis());
+        }
+        if (tick % 600 == 0) saveChecked();
+    }
+
+    // ---- Players going down, and coming up
+
+    /**
+     * Who's in sight now against last tick. Someone gone who's still online and wasn't far off, last
+     * seen just over the depths, went down; someone new there, who didn't just join, came up.
+     */
+    private void watchPlayers(long now) {
+        if (mc.getConnection() == null) return;
+        Set<UUID> tab = new HashSet<>();
+        for (PlayerInfo info : mc.getConnection().getOnlinePlayers()) {
+            tab.add(info.getProfile().id());
+            listed.putIfAbsent(info.getProfile().id(), now);
+        }
+        listed.keySet().retainAll(tab);
+        // A teleport of your own: everyone round you comes and goes at once.
+        Vec3 me = mc.player.position();
+        if (lastMe != null && me.distanceToSqr(lastMe) > 32 * 32) settledAt = now;
+        lastMe = me;
+        Map<UUID, Seen> current = new HashMap<>();
+        for (AbstractClientPlayer p : mc.level.players()) {
+            if (p == mc.player) continue;
+            Seen s = others.getOrDefault(p.getUUID(), new Seen());
+            s.name = p.getGameProfile().name();
+            s.pos = p.position();
+            s.dying = p.isDeadOrDying();
+            s.trail.addLast(new double[] {now, p.getY()});
+            while (!s.trail.isEmpty() && now - s.trail.peekFirst()[0] > TRAIL_MS) s.trail.removeFirst();
+            current.put(p.getUUID(), s);
+        }
+        if (vanish.get() && now - settledAt >= SETTLE_MS) {
+            for (Map.Entry<UUID, Seen> e : others.entrySet()) {
+                if (current.containsKey(e.getKey()) || !tab.contains(e.getKey()) || e.getValue().dying) continue;
+                went(e.getValue(), true, now);
+            }
+            for (Map.Entry<UUID, Seen> e : current.entrySet()) {
+                Long since = listed.get(e.getKey());
+                if (others.containsKey(e.getKey()) || since == null || now - since < SETTLE_MS) continue;
+                went(e.getValue(), false, now);
+            }
+        }
+        others.clear();
+        others.putAll(current);
+    }
+
+    private void went(Seen s, boolean down, long now) {
+        if (Math.hypot(s.pos.x - mc.player.getX(), s.pos.z - mc.player.getZ()) > VANISH_REACH) return;
+        BlockPos at = BlockPos.containing(s.pos);
+        LevelChunk chunk = mc.level.getChunkSource().getChunk(at.getX() >> 4, at.getZ() >> 4, false);
+        if (chunk == null) return;
+        // Only where the depths are made up (or players wouldn't vanish), and only right over them.
+        int floor = floor(chunk);
+        if (floor == 0 || at.getY() > floor + VANISH_ABOVE) return;
+        // Going down is coming down to it (falling, climbing, digging), not standing about in a cave and teleporting home.
+        if (down && at.getY() >= floor && s.highest() - s.pos.y < VANISH_DROP) return;
+        went.addLast(new Went(at.immutable(), s.name + (down ? " went down" : " came up"), now));
+        while (went.size() > 256) went.removeFirst();
+    }
+
+    // ---- Checked chunks
+
+    /** Down among the made-up layers: how far round you the real chunks come in, once it's settled. */
+    private void reveal(long now) {
+        ChunkPos c = mc.player.chunkPosition();
+        Scan here = scans.get(c.toLong());
+        if (!checked.get() || !hiding || here == null || !here.real()) {
+            shownRadius = -1;
+            pendingRadius = -1;
+            return;
+        }
+        int r = 0;
+        for (int d = 1; d <= radius.get().intValue(); d++) {
+            boolean all = true;
+            for (int dx = -d; dx <= d && all; dx++) {
+                for (int dz = -d; dz <= d && all; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != d) continue;
+                    Scan s = scans.get(ChunkPos.asLong(c.x + dx, c.z + dz));
+                    all = s != null && s.real();
+                }
+            }
+            if (!all) break;
+            r = d;
+        }
+        if (r != pendingRadius) {
+            pendingRadius = r;
+            pendingSince = now;
+        } else if (r != shownRadius && now - pendingSince >= 3000) {
+            shownRadius = r;
+            int n = checkedAt.getOrDefault(where(), Map.of()).size();
+            if (notify.get()) {
+                Notify.send("Chunk Finder", "Real chunks " + r + " round you (" + (2 * r + 1) + "x" + (2 * r + 1) + "); " + n
+                    + " checked here so far", false, false, false);
+            }
+        }
     }
 
     private static boolean far(long key, ChunkPos center, int r) {
@@ -491,19 +751,20 @@ public class ChunkFinder extends Module {
     private Scan scan(LevelChunk chunk, long now) {
         List<Hit> hits = new ArrayList<>();
         List<BlockPos> structures = new ArrayList<>();
-        if (mc.level.dimension() != Level.OVERWORLD) return new Scan(hits, structures, false, false, false, now);
+        if (mc.level.dimension() != Level.OVERWORLD) return new Scan(hits, structures, false, false, false, now, 0);
         int x0 = chunk.getPos().getMinBlockX();
         int z0 = chunk.getPos().getMinBlockZ();
         LevelChunkSection[] sections = chunk.getSections();
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         Map<Clue, Integer> counts = new EnumMap<>(Clue.class);
         boolean[] hidden = depths(chunk);
+        int floor = floor(chunk);
 
-        // Above the hidden zone: rotated deepslate, placed blocks near Y 0, grown kelp up at the sea.
+        // Above the hidden zone: deepslate patching a hole at Y 0, a miner's torches and ladders, grown kelp up at the sea.
         for (int i = 0; i < sections.length; i++) {
             LevelChunkSection section = sections[i];
             int baseY = chunk.getMinY() + i * 16;
-            if (baseY < 0 || baseY >= 96 || section.hasOnlyAir() || !section.maybeHas(ChunkFinder::interesting)) continue;
+            if (baseY + 16 <= floor || baseY >= floor + 96 || section.hasOnlyAir() || !section.maybeHas(ChunkFinder::interesting)) continue;
             for (int y = 0; y < 16; y++) {
                 for (int z = 0; z < 16; z++) {
                     for (int x = 0; x < 16; x++) {
@@ -514,23 +775,27 @@ public class ChunkFinder extends Module {
                         if (STRUCTURE.contains(block)) {
                             if (structures.size() < MAX_PER_CLUE * 4) structures.add(pos.immutable());
                         } else if (block == Blocks.DEEPSLATE) {
-                            if (rotated.get()) add(hits, counts, new Hit(pos.immutable(), Clue.ROTATED));
+                            if (rotated.get() && baseY + y >= floor && baseY + y < floor + PATCH_TOP) add(hits, counts, new Hit(pos.immutable(), Clue.ROTATED));
                         } else if (block == Blocks.KELP) {
                             if (kelp.get()) add(hits, counts, new Hit(pos.immutable(), Clue.KELP));
-                        } else if (PLACED.contains(block) && baseY + y < BAND) {
-                            if (placed.get()) add(hits, counts, new Hit(pos.immutable(), Clue.PLACED));
+                        } else if (PLACED.contains(block) && baseY + y >= floor && baseY + y < floor + BAND) {
+                            if (skipDug.get()) add(hits, counts, new Hit(pos.immutable(), Clue.PLACED));
                         }
                     }
                 }
             }
         }
-        if (digs.get()) {
-            shafts(chunk, hits, counts);
-            tunnels(chunk, hits, counts);
-        }
+        if (skipDug.get() || sealedShafts.get()) shafts(chunk, floor, hits, counts);
+        if (skipDug.get()) tunnels(chunk, floor, hits, counts);
+        if (sealedShafts.get()) sealed(chunk, floor, hits, counts);
+        if (seafloor.get()) seafloor(chunk, floor, hits, counts);
+        // Ladders and torches inside a capped shaft are its way down, not a miner's.
+        List<AABB> capped = new ArrayList<>();
+        for (Hit h : hits) if (h.clue() == Clue.CAPPED) capped.add(h.box().inflate(1));
+        if (!capped.isEmpty()) hits.removeIf(h -> h.clue() == Clue.PLACED && capped.stream().anyMatch(b -> b.contains(Vec3.atCenterOf(h.pos()))));
         boolean lit = light.get() && glow(chunk, hits, counts);
         if (rooms.get()) rooms(chunk, hits, counts);
-        return new Scan(hits, structures, hidden[0], hidden[0] && hidden[1], lit, now);
+        return new Scan(hits, structures, hidden[0], hidden[0] && hidden[1], lit, now, floor);
     }
 
     private static void add(List<Hit> hits, Map<Clue, Integer> counts, Hit hit) {
@@ -574,7 +839,206 @@ public class ChunkFinder extends Module {
         return new boolean[] {deep >= 2, air};
     }
 
-    // ---- Shafts and tunnels
+    /**
+     * Where the real world starts in this chunk, as far as you can see: the top of the made-up
+     * layers a server sends in place of what's down there (nothing but deepslate, and the bedrock
+     * floor), or Y 0 where nothing's made up. Donut's go up to Y 16 while you're up top; go down
+     * among them and the real ones come in, and this drops back to Y 0.
+     */
+    private static int floor(LevelChunk chunk) {
+        LevelChunkSection[] sections = chunk.getSections();
+        int top = chunk.getMinY();
+        for (int i = 0; i < sections.length; i++) {
+            LevelChunkSection section = sections[i];
+            if (section.hasOnlyAir()) break;
+            int[] other = {0};
+            section.getStates().count((st, n) -> {
+                if (n > 0 && !st.is(Blocks.DEEPSLATE) && !st.is(Blocks.BEDROCK)) other[0] += n;
+            });
+            if (other[0] > 0) break;
+            top = chunk.getMinY() + (i + 1) * 16;
+        }
+        return Math.max(0, top);
+    }
+
+    // ---- Sealed shafts
+
+    /**
+     * Sealed shafts: someone dug down to the hidden layers and filled the hole back in behind them,
+     * the way you hide a way in (Bedrock Burrow does it too). A straight column of fill from Y 0
+     * up through natural rock: one or two blocks wide at every layer, never the wide blob worldgen
+     * makes of dirt and gravel, and with cobblestone, cobbled deepslate or netherrack in it, which
+     * worldgen never puts in a column.
+     */
+    private static void sealed(LevelChunk chunk, int floor, List<Hit> hits, Map<Clue, Integer> counts) {
+        int x0 = chunk.getPos().getMinBlockX();
+        int z0 = chunk.getPos().getMinBlockZ();
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                int bottom = -1;
+                int run = 0;
+                int placed = 0;
+                for (int y = floor; y <= floor + SEAL_TOP; y++) {
+                    Block here = y < floor + SEAL_TOP ? fillAt(chunk, x, y, z) : null;
+                    if (here != null) {
+                        if (run == 0) bottom = y;
+                        run++;
+                        if (PLAYER_FILL.contains(here)) placed++;
+                        continue;
+                    }
+                    if (run >= SEAL_MIN && bottom <= floor + SEAL_BOTTOM && placed >= 3) {
+                        AABB box = new AABB(x0 + x, bottom, z0 + z, x0 + x + 1, bottom + run, z0 + z + 1);
+                        add(hits, counts, new Hit(new BlockPos(x0 + x, bottom, z0 + z), Clue.SEALED, null, box));
+                    }
+                    // Only a column that starts at the bottom leads anywhere.
+                    if (run == 0 && y > floor + SEAL_BOTTOM) break;
+                    if (run > 0 && bottom <= floor + SEAL_BOTTOM) break;
+                    run = 0;
+                    placed = 0;
+                }
+            }
+        }
+    }
+
+    /**
+     * Patched seafloor: gravel and sand can't be put back (they fall), so a way down under the sea
+     * gets plugged with whatever's to hand, and the plug sits in the gravel: stone, dirt or cobble on
+     * a seabed that's otherwise gravel, sand or clay. One to four blocks of it, level with the seabed
+     * all round it, rare on this bit of seabed, and over a way down to Y 0. Real seabeds are full of
+     * small dirt and stone patches, but they sit on dirt and rock; a plug sits on the hole it hides.
+     */
+    private void seafloor(LevelChunk chunk, int depths, List<Hit> hits, Map<Clue, Integer> counts) {
+        int x0 = chunk.getPos().getMinBlockX();
+        int z0 = chunk.getPos().getMinBlockZ();
+        int[][] floorY = new int[16][16];
+        Block[][] floor = new Block[16][16];
+        BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                floorY[x][z] = Integer.MIN_VALUE;
+                int top = chunk.getHeight(Heightmap.Types.WORLD_SURFACE, x, z);
+                // The sea: water at the top, then down through it (seagrass and kelp hold water too).
+                if (chunk.getFluidState(p.set(x, top, z)).isEmpty()) continue;
+                int y = top;
+                while (y > 0 && !chunk.getFluidState(p.set(x, y, z)).isEmpty()) y--;
+                if (y <= 0) continue;
+                floorY[x][z] = y;
+                floor[x][z] = chunk.getBlockState(p.set(x, y, z)).getBlock();
+            }
+        }
+        Map<Block, Integer> common = new HashMap<>();
+        for (Block[] row : floor) for (Block b : row) if (b != null) common.merge(b, 1, Integer::sum);
+        // Each patch of plug blocks on the seabed as a whole: four blocks or fewer, ringed by seabed.
+        boolean[][] done = new boolean[16][16];
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                if (done[x][z] || floor[x][z] == null || !PLUG.contains(floor[x][z])) continue;
+                List<int[]> patch = new ArrayList<>();
+                Deque<int[]> queue = new ArrayDeque<>();
+                queue.add(new int[] {x, z});
+                done[x][z] = true;
+                while (!queue.isEmpty() && patch.size() <= 4) {
+                    int[] c = queue.poll();
+                    patch.add(c);
+                    for (int dx = -1; dx <= 1; dx++) {
+                        for (int dz = -1; dz <= 1; dz++) {
+                            int nx = c[0] + dx, nz = c[1] + dz;
+                            if (nx < 0 || nx > 15 || nz < 0 || nz > 15 || done[nx][nz]) continue;
+                            if (floor[nx][nz] != null && PLUG.contains(floor[nx][nz])) {
+                                done[nx][nz] = true;
+                                queue.add(new int[] {nx, nz});
+                            }
+                        }
+                    }
+                }
+                if (patch.size() > 4 || !queue.isEmpty()) continue;
+                // A floor that's dirt or stone all over (a river, a lake, bare rock) isn't patched.
+                if (patch.stream().anyMatch(c -> common.get(floor[c[0]][c[1]]) > 8)) continue;
+                int seabed = 0;
+                int other = 0;
+                for (int[] c : patch) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        for (int dz = -1; dz <= 1; dz++) {
+                            int nx = c[0] + dx, nz = c[1] + dz;
+                            if (nx < 0 || nx > 15 || nz < 0 || nz > 15) continue;
+                            Block n = floor[nx][nz];
+                            if (n != null && PLUG.contains(n)) continue;
+                            // Seabed only counts level with the plug; a drop beside it is a hole, not a patch.
+                            if (n != null && SEABED.contains(n) && Math.abs(floorY[nx][nz] - floorY[c[0]][c[1]]) <= 1) seabed++;
+                            else other++;
+                        }
+                    }
+                }
+                if (seabed >= 5 && seabed >= other * 3 && wayDown(patch, floorY, x0, z0, depths)) {
+                    AABB box = null;
+                    for (int[] c : patch) {
+                        AABB b = new AABB(new BlockPos(x0 + c[0], floorY[c[0]][c[1]], z0 + c[1]));
+                        box = box == null ? b : box.minmax(b);
+                    }
+                    int[] c = patch.get(0);
+                    add(hits, counts, new Hit(new BlockPos(x0 + c[0], floorY[c[0]][c[1]], z0 + c[1]), Clue.SEAFLOOR, floor[c[0]][c[1]].getName().getString(), box));
+                }
+            }
+        }
+    }
+
+    /**
+     * A way down under a seabed patch (chunk-local cells): from just under it to Y 3, nothing but water,
+     * air and what a hole gets filled back in with, never the rock round it, and walled in for all but
+     * a few layers (the sand and gravel it starts in, a cave it crosses). Under a natural patch there's
+     * rock within a few blocks.
+     */
+    private boolean wayDown(List<int[]> patch, int[][] floorY, int x0, int z0, int floor) {
+        Set<Long> foot = new HashSet<>();
+        for (int[] c : patch) foot.add(BlockPos.asLong(x0 + c[0], 0, z0 + c[1]));
+        BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+        for (int[] c : patch) {
+            int x = x0 + c[0];
+            int z = z0 + c[1];
+            int layers = 0;
+            int wide = 0;
+            boolean down = true;
+            for (int y = floorY[c[0]][c[1]] - 1; y >= floor + SEAL_BOTTOM && down; y--) {
+                boolean open = open(x, y, z);
+                Block block = mc.level.getBlockState(p.set(x, y, z)).getBlock();
+                if (!open && !FILL.contains(block) && !SEABED.contains(block)) {
+                    down = false;
+                    continue;
+                }
+                layers++;
+                if (!open) continue;
+                int around = 0;
+                for (int dx = -1; dx <= 1; dx++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        if ((dx != 0 || dz != 0) && !foot.contains(BlockPos.asLong(x + dx, 0, z + dz)) && open(x + dx, y, z + dz)) around++;
+                    }
+                }
+                if (around > 3) wide++;
+            }
+            if (down && layers >= SEAL_MIN && wide <= WIDE_MAX) return true;
+        }
+        return false;
+    }
+
+    /** The fill block at a spot (chunk-local x and z) if it's in a narrow column; null otherwise. */
+    private static Block fillAt(LevelChunk chunk, int x, int y, int z) {
+        Block block = chunk.getBlockState(new BlockPos(x, y, z)).getBlock();
+        boolean sideways = block == Blocks.DEEPSLATE
+            && chunk.getBlockState(new BlockPos(x, y, z)).getValue(RotatedPillarBlock.AXIS) != Direction.Axis.Y;
+        if (!FILL.contains(block) && !sideways) return null;
+        // One or two wide: three or fewer fill blocks in the ring round it. A blob has more.
+        int around = 0;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0 || x + dx < 0 || x + dx > 15 || z + dz < 0 || z + dz > 15) continue;
+                Block n = chunk.getBlockState(new BlockPos(x + dx, y, z + dz)).getBlock();
+                if (FILL.contains(n)) around++;
+            }
+        }
+        return around <= 3 ? (sideways ? Blocks.COBBLED_DEEPSLATE : block) : null;
+    }
+
+    // ---- Open shafts and tunnels (dug out)
 
     /** Nothing in the way: air, water, a ladder, scaffolding, a torch, a vine. */
     private boolean open(int x, int y, int z) {
@@ -593,25 +1057,28 @@ public class ChunkFinder extends Module {
      * zone) under it, the patch of open cells round it at that height, if it's small (up to 3x3) and
      * walled in. Then up, as long as exactly that patch stays open and its walls stay solid.
      */
-    private void shafts(LevelChunk chunk, List<Hit> hits, Map<Clue, Integer> counts) {
+    private void shafts(LevelChunk chunk, int floor, List<Hit> hits, Map<Clue, Integer> counts) {
         int x0 = chunk.getPos().getMinBlockX();
         int z0 = chunk.getPos().getMinBlockZ();
         Set<Long> seen = new HashSet<>();
         for (int x = x0; x < x0 + 16; x++) {
             for (int z = z0; z < z0 + 16; z++) {
-                for (int y = 0; y <= 3; y++) {
+                for (int y = floor; y <= floor + 3; y++) {
                     if (!open(x, y, z)) continue;
-                    if (y > 0 && open(x, y - 1, z)) break;
+                    if (y > floor && open(x, y - 1, z)) break;
                     Set<Long> foot = footprint(x, y, z);
                     if (foot == null || !seen.add(foot.stream().min(Long::compare).orElse(0L))) break;
-                    int height = rise(foot, y);
-                    if (height >= SHAFT_MIN) {
+                    Rise rise = rise(foot, y);
+                    int height = rise.height();
+                    // Open at the top: someone mined it. Closed over: someone's hiding the way down.
+                    boolean want = rise.capped() ? sealedShafts.get() : skipDug.get();
+                    if (height >= SHAFT_MIN && want) {
                         AABB box = null;
                         for (long cell : foot) {
                             AABB b = new AABB(BlockPos.getX(cell), y, BlockPos.getZ(cell), BlockPos.getX(cell) + 1, y + height, BlockPos.getZ(cell) + 1);
                             box = box == null ? b : box.minmax(b);
                         }
-                        add(hits, counts, new Hit(new BlockPos(x, y, z), Clue.SHAFT, null, box));
+                        add(hits, counts, new Hit(new BlockPos(x, y, z), rise.capped() ? Clue.CAPPED : Clue.SHAFT, null, box));
                     }
                     break;
                 }
@@ -640,22 +1107,32 @@ public class ChunkFinder extends Module {
     }
 
     /** How many layers up from y the footprint stays open with solid walls all round it. */
-    private int rise(Set<Long> foot, int y) {
+    /** How far a shaft goes up, and whether it ends under a lid (closed right over) rather than opening out. */
+    private record Rise(int height, boolean capped) {
+    }
+
+    private Rise rise(Set<Long> foot, int y) {
         int height = 0;
         for (int at = y; at < y + 96; at++) {
             for (long cell : foot) {
                 int cx = BlockPos.getX(cell);
                 int cz = BlockPos.getZ(cell);
-                if (!open(cx, at, cz)) return height;
+                if (!open(cx, at, cz)) {
+                    // A lid only if it closes the whole shaft at once; a step or a ledge isn't one.
+                    boolean lid = true;
+                    for (long c : foot) lid &= !open(BlockPos.getX(c), at, BlockPos.getZ(c));
+                    return new Rise(height, lid);
+                }
                 for (Direction d : Direction.Plane.HORIZONTAL) {
                     int nx = cx + d.getStepX();
                     int nz = cz + d.getStepZ();
-                    if (!foot.contains(BlockPos.asLong(nx, 0, nz)) && open(nx, at, nz)) return height;
+                    // Opens out sideways: into the open air, the sea, a cave or a tunnel.
+                    if (!foot.contains(BlockPos.asLong(nx, 0, nz)) && open(nx, at, nz)) return new Rise(height, false);
                 }
             }
             height++;
         }
-        return height;
+        return new Rise(height, false);
     }
 
     /** A tunnel's cross-section at one step along it: the floor height, how tall, and where its walls are. */
@@ -666,12 +1143,12 @@ public class ChunkFinder extends Module {
      * Straight tunnels just above the hidden layers: a box-shaped corridor, 1 to 3 wide and 2 or 3
      * high with rock all round, the same for 14 blocks or more along X or Z.
      */
-    private void tunnels(LevelChunk chunk, List<Hit> hits, Map<Clue, Integer> counts) {
+    private void tunnels(LevelChunk chunk, int floor, List<Hit> hits, Map<Clue, Integer> counts) {
         int x0 = chunk.getPos().getMinBlockX();
         int z0 = chunk.getPos().getMinBlockZ();
         Set<String> seen = new HashSet<>();
         for (boolean alongX : new boolean[] {true, false}) {
-            for (int y = 1; y < BAND; y++) {
+            for (int y = floor + 1; y < floor + BAND; y++) {
                 for (int x = x0; x < x0 + 16; x++) {
                     for (int z = z0; z < z0 + 16; z++) {
                         Slice s = slice(x, y, z, alongX);
@@ -1024,6 +1501,8 @@ public class ChunkFinder extends Module {
         int r = radius.get().intValue();
         long now = System.currentTimeMillis();
         while (!sounds.isEmpty() && now - sounds.peekFirst().at() > HEARD_FOR) sounds.removeFirst();
+        while (!went.isEmpty() && now - went.peekFirst().at() > VANISH_FOR) went.removeFirst();
+        if (watch.get()) for (Found f : found) if (f.where.equals(where)) checkWays(f, now);
 
         StructureMarks structures = new StructureMarks(STRUCTURE_REACH);
         for (Scan s : scans.values()) s.structures().forEach(structures::add);
@@ -1036,7 +1515,8 @@ public class ChunkFinder extends Module {
         for (Map.Entry<Long, Scan> e : scans.entrySet()) {
             for (Hit h : e.getValue().hits()) {
                 // A stronghold's ladders and torches, a mineshaft's tunnels: theirs, not a player's.
-                if ((h.clue() == Clue.PLACED || h.clue() == Clue.TUNNEL || h.clue() == Clue.SHAFT) && structures.near(h.pos())) continue;
+                if ((h.clue() == Clue.PLACED || h.clue() == Clue.TUNNEL || h.clue() == Clue.SHAFT || h.clue() == Clue.SEALED
+                    || h.clue() == Clue.CAPPED || h.clue() == Clue.SEAFLOOR) && structures.near(h.pos())) continue;
                 // A dungeon's room, a trial chamber's halls; a trial chamber's copper bulbs. Not lamps by a
                 // spawner: a spawner with a farm round it is a base.
                 if (h.clue() == Clue.ROOM && naturals.near(h.pos()) || h.clue() == Clue.LAMP && chambers.near(h.pos())) continue;
@@ -1053,6 +1533,15 @@ public class ChunkFinder extends Module {
         for (Hit h : keptBelow()) byChunk.computeIfAbsent(ChunkPos.asLong(h.pos()), k -> new ArrayList<>()).add(h);
         for (Hit h : stayingBelow(now)) byChunk.computeIfAbsent(ChunkPos.asLong(h.pos()), k -> new ArrayList<>()).add(h);
         for (Heard h : sounds) byChunk.computeIfAbsent(ChunkPos.asLong(h.pos()), k -> new ArrayList<>()).add(new Hit(h.pos(), Clue.HEARD, h.what()));
+        for (Went w : went) {
+            byChunk.computeIfAbsent(ChunkPos.asLong(w.pos()), k -> new ArrayList<>())
+                .add(new Hit(w.pos(), Clue.VANISHED, w.what(), new AABB(w.pos()).expandTowards(0, 1, 0)));
+        }
+        for (Found f : found) {
+            if (!f.where.equals(where) || f.used == null || now - f.usedAt > USED_FOR) continue;
+            BlockPos at = f.watched.isEmpty() ? BlockPos.containing(f.center()) : f.watched.keySet().iterator().next();
+            byChunk.computeIfAbsent(ChunkPos.asLong(f.cx, f.cz), k -> new ArrayList<>()).add(new Hit(at, Clue.USED, f.used));
+        }
 
         double spawn = spawnRadius.get();
         ChestIndex chests = Modules.get(ChestIndex.class);
@@ -1078,12 +1567,101 @@ public class ChunkFinder extends Module {
             }
             f.hits = e.getValue();
             f.live = true;
+            if (watch.get()) watchWays(f);
         }
         for (Found f : found) if (f.where.equals(where) && !f.live) f.hits = List.of();
         if (!remember.get()) found.removeIf(f -> !f.live);
     }
 
     private record Judged(boolean flag, double score, String reasons) {
+    }
+
+    // ---- Ways in, watched
+
+    /** The blocks that close a found chunk's ways in, as they are now: the lid over a capped shaft, the top of a sealed one, a seafloor plug. */
+    private void watchWays(Found f) {
+        if (!f.watched.isEmpty()) return;
+        for (Hit h : f.hits) {
+            AABB b = h.box();
+            int x0 = Mth.floor(b.minX), x1 = Mth.floor(b.maxX), z0 = Mth.floor(b.minZ), z1 = Mth.floor(b.maxZ);
+            List<BlockPos> spots = new ArrayList<>();
+            String way;
+            if (h.clue() == Clue.CAPPED) {
+                way = "capped shaft";
+                for (int x = x0; x < x1; x++) for (int z = z0; z < z1; z++) spots.add(new BlockPos(x, Mth.floor(b.maxY), z));
+            } else if (h.clue() == Clue.SEALED) {
+                way = "sealed shaft";
+                int top = Mth.floor(b.maxY) - 1;
+                spots.add(new BlockPos(x0, top, z0));
+                spots.add(new BlockPos(x0, top - 1, z0));
+            } else if (h.clue() == Clue.SEAFLOOR) {
+                way = "patched seafloor";
+                for (int x = x0; x < x1; x++) {
+                    for (int z = z0; z < z1; z++) {
+                        BlockPos at = new BlockPos(x, Mth.floor(b.minY), z);
+                        if (PLUG.contains(mc.level.getBlockState(at).getBlock())) spots.add(at);
+                    }
+                }
+            } else {
+                continue;
+            }
+            for (BlockPos at : spots) {
+                if (f.watched.size() < WATCH_MAX) f.watched.put(at, new Watch(way, id(mc.level.getBlockState(at))));
+            }
+        }
+        if (!f.watched.isEmpty()) save();
+    }
+
+    /** Whether a found chunk's ways in are as they were. Opened, closed or swapped by someone else: they're using it. */
+    private void checkWays(Found f, long now) {
+        if (f.watched.isEmpty() || !mc.level.hasChunk(f.cx, f.cz)) return;
+        LevelChunk chunk = mc.level.getChunkSource().getChunk(f.cx, f.cz, false);
+        if (chunk == null) return;
+        int floor = floor(chunk);
+        boolean changed = false;
+        for (Map.Entry<BlockPos, Watch> e : f.watched.entrySet()) {
+            BlockPos at = e.getKey();
+            // Down among the made-up layers it can't be seen as it is.
+            if (at.getY() < floor) continue;
+            Watch w = e.getValue();
+            String is = id(mc.level.getBlockState(at));
+            if (kind(is).equals(kind(w.state))) continue;
+            String was = w.state;
+            w.state = is;
+            changed = true;
+            // Your own doing (you went to look).
+            if (mc.player.blockPosition().distSqr(at) < 64) continue;
+            f.usedAt = now;
+            f.used = w.way + " " + change(kind(was), kind(is), was, is);
+            if (notify.get()) {
+                long dist = Math.round(Math.hypot(f.cx * 16 + 8 - mc.player.getX(), f.cz * 16 + 8 - mc.player.getZ()));
+                Notify.send("Way in used", (f.cx * 16 + 8) + ", " + (f.cz * 16 + 8) + " (" + dist + "m): the " + f.used
+                    + ", somebody's using it", true, true, true);
+            }
+        }
+        if (changed) save();
+    }
+
+    private static String id(BlockState state) {
+        return BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
+    }
+
+    /** Grass coming and going on a dirt lid, air of one kind or another: no change. */
+    private static String kind(String id) {
+        return switch (id) {
+            case "grass_block", "podzol", "mycelium", "coarse_dirt", "rooted_dirt", "dirt_path" -> "dirt";
+            case "cave_air", "void_air" -> "air";
+            default -> id;
+        };
+    }
+
+    /** "opened, cobblestone gone", "closed with dirt", "swapped cobblestone for dirt". */
+    private static String change(String was, String is, String wasId, String isId) {
+        boolean open = is.equals("air") || is.equals("water");
+        boolean shut = was.equals("air") || was.equals("water");
+        if (open && !shut) return "opened, " + wasId.replace('_', ' ') + " gone";
+        if (shut && !open) return "closed with " + isId.replace('_', ' ');
+        return "swapped " + wasId.replace('_', ' ') + " for " + isId.replace('_', ' ');
     }
 
     /**
@@ -1097,6 +1675,14 @@ public class ChunkFinder extends Module {
             amounts.merge(h.clue(), 1, Integer::sum);
             if (h.detail() != null) details.computeIfAbsent(h.clue(), k -> new LinkedHashSet<>()).add(h.detail());
         }
+        boolean dug = false;
+        boolean live = false;
+        for (Clue c : amounts.keySet()) {
+            dug |= c.dug;
+            live |= c.live;
+        }
+        // Dug out in the open: whatever was under it is gone, or never was. Unless someone's there now.
+        if (dug && skipDug.get() && !live) return new Judged(false, 0, "dug out");
         double score = 0;
         int kinds = 0;
         boolean strong = false;
@@ -1104,7 +1690,7 @@ public class ChunkFinder extends Module {
         for (Map.Entry<Clue, Integer> a : amounts.entrySet()) {
             Clue clue = a.getKey();
             int amount = a.getValue();
-            if (amount < clue.least) continue;
+            if (clue.dug || amount < clue.least) continue;
             score += clue.weight * Math.min(2.5, 1 + Math.log(amount) / Math.log(2) * 0.35);
             kinds++;
             if (clue.strong) strong = true;
@@ -1125,13 +1711,14 @@ public class ChunkFinder extends Module {
             if (d != null && c != Clue.ANIMALS) part += " (" + String.join(", ", d.stream().limit(5).toList()) + (d.size() > 5 ? "..." : "") + ")";
             parts.add(part);
         }
+        if (dug) parts.add("dug out above, but someone's down there now");
         return new Judged(flag, score, String.join(", ", parts));
     }
 
     /** "4 rotated deepslate", "a shaft into the hidden layers". */
     private static String howMany(Clue clue, int amount) {
         String[] forms = clue.label.split("\\|");
-        return amount == 1 ? (clue == Clue.ROTATED || clue == Clue.KELP ? forms[0] : "a " + forms[0]) : amount + " " + forms[1];
+        return amount == 1 ? (clue == Clue.KELP ? forms[0] : "a " + forms[0]) : amount + " " + forms[1];
     }
 
     private Found match(String where, int cx, int cz) {
@@ -1205,6 +1792,22 @@ public class ChunkFinder extends Module {
     public void onRender3D(Render3D render) {
         String where = where();
         int rgb = 0xFF000000 | color.get();
+        Map<Long, Long> seen = checked.get() ? checkedAt.get(where) : null;
+        if (seen != null && !seen.isEmpty()) {
+            // Where you've seen the real depths: flat and faint at Y 0, and not over a chunk that's marked.
+            Set<Long> marked = new HashSet<>();
+            for (Found f : found) if (f.where.equals(where)) marked.add(ChunkPos.asLong(f.cx, f.cz));
+            int ccx = Mth.floor(render.camera().x) >> 4;
+            int ccz = Mth.floor(render.camera().z) >> 4;
+            int fill = Theme.alpha(CHECKED_COLOR, 22);
+            int edge = Theme.alpha(CHECKED_COLOR, 90);
+            for (long key : seen.keySet()) {
+                int cx = ChunkPos.getX(key);
+                int cz = ChunkPos.getZ(key);
+                if (Math.max(Math.abs(cx - ccx), Math.abs(cz - ccz)) > CHECKED_DRAWN || marked.contains(key)) continue;
+                render.box(new AABB(cx * 16 + 0.6, -0.02, cz * 16 + 0.6, cx * 16 + 15.4, 0.15, cz * 16 + 15.4), fill, edge, 1f, false);
+            }
+        }
         for (Found f : found) {
             if (!f.where.equals(where)) continue;
             Vec3 c = f.center();
@@ -1325,14 +1928,66 @@ public class ChunkFinder extends Module {
         if (loaded) return;
         loaded = true;
         try {
-            if (!Files.exists(file())) return;
-            for (JsonElement e : JsonParser.parseString(Files.readString(file(), StandardCharsets.UTF_8)).getAsJsonArray()) {
+            JsonArray saved = Files.exists(file()) ? JsonParser.parseString(Files.readString(file(), StandardCharsets.UTF_8)).getAsJsonArray() : new JsonArray();
+            for (JsonElement e : saved) {
                 JsonObject o = e.getAsJsonObject();
-                found.add(new Found(o.get("where").getAsString(), o.get("cx").getAsInt(), o.get("cz").getAsInt(),
-                    o.get("score").getAsDouble(), o.get("reasons").getAsString()));
+                Found f = new Found(o.get("where").getAsString(), o.get("cx").getAsInt(), o.get("cz").getAsInt(),
+                    o.get("score").getAsDouble(), o.get("reasons").getAsString());
+                if (o.has("watch")) {
+                    for (JsonElement w : o.getAsJsonArray("watch")) {
+                        JsonArray a = w.getAsJsonArray();
+                        f.watched.put(new BlockPos(a.get(0).getAsInt(), a.get(1).getAsInt(), a.get(2).getAsInt()),
+                            new Watch(a.get(3).getAsString(), a.get(4).getAsString()));
+                    }
+                }
+                if (o.has("used")) {
+                    f.used = o.get("used").getAsString();
+                    f.usedAt = o.get("usedAt").getAsLong();
+                }
+                found.add(f);
             }
         } catch (IOException | RuntimeException ignored) {
             // A broken file: start fresh rather than lose the game.
+        }
+        try {
+            if (!Files.exists(checkedFile())) return;
+            JsonObject root = JsonParser.parseString(Files.readString(checkedFile(), StandardCharsets.UTF_8)).getAsJsonObject();
+            for (Map.Entry<String, JsonElement> world : root.entrySet()) {
+                Map<Long, Long> chunks = checkedAt.computeIfAbsent(world.getKey(), k -> new HashMap<>());
+                for (JsonElement c : world.getValue().getAsJsonArray()) {
+                    JsonArray a = c.getAsJsonArray();
+                    chunks.put(ChunkPos.asLong(a.get(0).getAsInt(), a.get(1).getAsInt()), a.get(2).getAsLong());
+                }
+            }
+        } catch (IOException | RuntimeException ignored) {
+            // Start the checking over.
+        }
+    }
+
+    private Path checkedFile() {
+        return Config.dir().resolve("chunks-checked.json");
+    }
+
+    private void saveChecked() {
+        if (!checkedDirty) return;
+        checkedDirty = false;
+        JsonObject root = new JsonObject();
+        for (Map.Entry<String, Map<Long, Long>> world : checkedAt.entrySet()) {
+            JsonArray chunks = new JsonArray();
+            for (Map.Entry<Long, Long> c : world.getValue().entrySet()) {
+                JsonArray a = new JsonArray();
+                a.add(ChunkPos.getX(c.getKey()));
+                a.add(ChunkPos.getZ(c.getKey()));
+                a.add(c.getValue());
+                chunks.add(a);
+            }
+            root.add(world.getKey(), chunks);
+        }
+        try {
+            Files.createDirectories(checkedFile().getParent());
+            Files.writeString(checkedFile(), root.toString(), StandardCharsets.UTF_8);
+        } catch (IOException ignored) {
+            // Still checked for this session.
         }
     }
 
@@ -1346,6 +2001,23 @@ public class ChunkFinder extends Module {
             o.addProperty("cz", f.cz);
             o.addProperty("score", Math.round(f.score));
             o.addProperty("reasons", f.reasons);
+            if (!f.watched.isEmpty()) {
+                JsonArray w = new JsonArray();
+                for (Map.Entry<BlockPos, Watch> e : f.watched.entrySet()) {
+                    JsonArray a = new JsonArray();
+                    a.add(e.getKey().getX());
+                    a.add(e.getKey().getY());
+                    a.add(e.getKey().getZ());
+                    a.add(e.getValue().way);
+                    a.add(e.getValue().state);
+                    w.add(a);
+                }
+                o.add("watch", w);
+            }
+            if (f.used != null) {
+                o.addProperty("used", f.used);
+                o.addProperty("usedAt", f.usedAt);
+            }
             array.add(o);
         }
         try {

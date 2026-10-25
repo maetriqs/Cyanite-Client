@@ -195,6 +195,8 @@ public final class Modules {
         register(new AntiModCheck());
         register(new StreamerMode());
         register(new Pets());
+        register(new com.cyanite.client.modules.misc.Clips());
+        register(new com.cyanite.client.modules.misc.BaseGuard());
 
         register(new ChunkFinder());
         register(new FakePay());

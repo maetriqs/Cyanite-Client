@@ -80,6 +80,9 @@ public final class ChunkScanner {
     // ---- Told by the game (game thread)
 
     public static void chunkLoaded(LevelChunk chunk) {
+        // A new world's first chunks come in before its first tick: start over now, not on that
+        // tick, or they'd be wiped from the list and never looked at.
+        if (chunk.getLevel() instanceof ClientLevel in && in != level) newLevel(in);
         long key = chunk.getPos().toLong();
         loaded.put(key, 0L);
         due.put(key, System.nanoTime() + LOAD_DELAY);
@@ -108,12 +111,7 @@ public final class ChunkScanner {
     /** Once a tick: hands back results, follows the player, and queues the minute-old chunks. */
     public static void tick() {
         Minecraft mc = Minecraft.getInstance();
-        if (mc.level != level) {
-            level = mc.level;
-            due.clear();
-            loaded.clear();
-            results.clear();
-        }
+        if (mc.level != level) newLevel(mc.level);
         if (mc.player != null) {
             centerX = mc.player.chunkPosition().x;
             centerZ = mc.player.chunkPosition().z;
@@ -126,6 +124,13 @@ public final class ChunkScanner {
                 if (e.getValue() != 0 && now - e.getValue() > RESCAN) due.putIfAbsent(e.getKey(), now);
             }
         }
+    }
+
+    private static void newLevel(ClientLevel in) {
+        level = in;
+        due.clear();
+        loaded.clear();
+        results.clear();
     }
 
     // ---- The scanner's thread

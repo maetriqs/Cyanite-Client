@@ -125,6 +125,11 @@ public final class Paths {
             && !state.is(Blocks.SWEET_BERRY_BUSH) && !state.is(Blocks.POWDER_SNOW) && !state.is(Blocks.WITHER_ROSE);
     }
 
+    /** Room for a body that isn't next to lava: what a column built up through has to be. */
+    public static boolean clearAir(Level level, BlockPos pos) {
+        return passable(level, pos) && !nearLava(level, pos);
+    }
+
     private static boolean nearLava(Level level, BlockPos pos) {
         if (lava(level, pos)) return true;
         for (Direction d : Direction.values()) {
@@ -165,5 +170,10 @@ public final class Paths {
 
     public int reached() {
         return dist.size();
+    }
+
+    /** Every spot it found a way to, as packed positions. */
+    public it.unimi.dsi.fastutil.longs.LongSet spots() {
+        return dist.keySet();
     }
 }

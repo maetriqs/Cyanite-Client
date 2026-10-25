@@ -10,6 +10,7 @@ public abstract class Setting<T> {
     protected T value;
     private Runnable listener;
     private boolean risky;
+    private boolean secret;
 
     protected Setting(String name, T defaultValue) {
         this.name = name;
@@ -38,6 +39,15 @@ public abstract class Setting<T> {
 
     public boolean isRisky() {
         return risky;
+    }
+
+    /** Something private, like a webhook URL: hidden in the menu and left out of profiles, so sharing one never shares it. */
+    protected void markSecret() {
+        secret = true;
+    }
+
+    public boolean isSecret() {
+        return secret;
     }
 
     public void onChange(Runnable listener) {

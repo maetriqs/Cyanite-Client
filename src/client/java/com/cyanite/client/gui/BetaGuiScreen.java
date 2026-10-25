@@ -54,8 +54,6 @@ public class BetaGuiScreen extends Screen {
     private static final int LIST_HEAD = 30;
     private static final int ROW = 26;
     private static final int GOLD = 0xFFFFC83D;
-    /** Every module has these two; matching them would turn up every module there is. */
-    private static final Set<String> COMMON = Set.of("Bind", "Show in list");
 
     /** Where you were, so the menu opens there again. */
     private static String lastNav = "cat:" + Category.COMBAT.name();
@@ -446,7 +444,7 @@ public class BetaGuiScreen extends Screen {
         int fieldX = cx + 10;
         int fieldW = Math.min(320, closeX - 80 - fieldX);
         search.render(g, fieldX, mid - 8, fieldW, 16, "Search modules, settings, pages...", mouseX, mouseY, dt, a);
-        magnifier(g, fieldX + 9, mid, Theme.fade(search.isFocused() ? Theme.accentText() : Theme.TEXT_DIM, a), a);
+        Widgets.magnifier(g, fieldX + 9, mid, Theme.fade(search.isFocused() ? Theme.accentText() : Theme.TEXT_DIM, a), a);
 
         // How many are on, as a pill: a click shows them.
         long on = Modules.getAll().stream().filter(Module::isEnabled).count();
@@ -481,23 +479,6 @@ public class BetaGuiScreen extends Screen {
     }
 
     /** A magnifying glass centred on (x, y): a ring and a handle. */
-    private static void magnifier(GuiGraphics g, int x, int y, int color, float a) {
-        int s = Render2D.scale();
-        int ring = Math.round(3.3f * s);
-        int thick = Math.max(1, Math.round(0.9f * s));
-        int icx = x * s - s / 2;
-        int icy = y * s - s / 2;
-        Render2D.pixels(g);
-        Render2D.rect(g, icx - ring, icy - ring, ring * 2, ring * 2, ring, color);
-        Render2D.rect(g, icx - ring + thick, icy - ring + thick, (ring - thick) * 2, (ring - thick) * 2, ring - thick, Theme.fade(Theme.FIELD, a));
-        g.pose().pushMatrix();
-        g.pose().translate(icx + ring * 0.62f, icy + ring * 0.62f);
-        g.pose().rotate((float) Math.PI / 4);
-        g.fill(0, -thick / 2, Math.round(2.8f * s), thick - thick / 2, color);
-        g.pose().popMatrix();
-        Render2D.end(g);
-    }
-
     // ---- Bigger text, for titles
 
     /** Half as big again (twice at the smallest scale), from a font made at that size so it stays sharp. */
@@ -693,30 +674,15 @@ public class BetaGuiScreen extends Screen {
         }
         List<Scored> found = new ArrayList<>();
         for (Module m : Modules.getAll()) {
-            String name = m.name.toLowerCase(Locale.ROOT);
-            if (name.startsWith(q)) {
-                found.add(new Scored(new Row(m, null, null, null), 0, m.name));
-            } else if (wordStarts(name, q) || initials(name).startsWith(q.replace(" ", ""))) {
-                found.add(new Scored(new Row(m, null, null, null), 1, m.name));
-            } else if (name.contains(q)) {
-                // Mid-word ("esp" in Auto Respawn) after whole-word matches (Block ESP).
-                found.add(new Scored(new Row(m, null, null, null), 2, m.name));
-            } else {
-                Setting<?> hit = null;
-                for (Setting<?> st : m.settings()) {
-                    if (!COMMON.contains(st.name) && st.name.toLowerCase(Locale.ROOT).contains(q)) {
-                        hit = st;
-                        break;
-                    }
-                }
-                if (hit != null) found.add(new Scored(new Row(m, null, "Setting: " + hit.name, hit), 3, m.name));
-                else if (m.description.toLowerCase(Locale.ROOT).contains(q)) found.add(new Scored(new Row(m, null, null, null), 4, m.name));
-            }
+            ModuleSearch.Hit hit = ModuleSearch.match(m, q);
+            if (hit == null) continue;
+            Setting<?> setting = hit.setting();
+            found.add(new Scored(new Row(m, null, setting == null ? null : "Setting: " + setting.name, setting), hit.score(), m.name));
         }
         for (Nav n : navs) {
             String label = n.label.toLowerCase(Locale.ROOT);
             if (n.kind.ordinal() >= Kind.HUD.ordinal() && label.contains(q)) {
-                found.add(new Scored(new Row(null, n, "Open " + n.label, null), wordStarts(label, q) ? 1 : 2, n.label));
+                found.add(new Scored(new Row(null, n, "Open " + n.label, null), ModuleSearch.wordStarts(label, q) ? 1 : 2, n.label));
             }
         }
         Nav lookNav = navs.stream().filter(n -> n.kind == Kind.LOOK).findFirst().orElseThrow();
@@ -725,22 +691,6 @@ public class BetaGuiScreen extends Screen {
         }
         found.sort(Comparator.comparingInt(Scored::score).thenComparing(Scored::name, String.CASE_INSENSITIVE_ORDER));
         return found.stream().map(Scored::row).toList();
-    }
-
-    /** Whether a word of {@code name} (after a space, & or the start) begins with {@code q}. */
-    private static boolean wordStarts(String name, String q) {
-        for (int i = name.indexOf(q); i >= 0; i = name.indexOf(q, i + 1)) {
-            if (i == 0 || name.charAt(i - 1) == ' ' || name.charAt(i - 1) == '&') return true;
-        }
-        return false;
-    }
-
-    private static String initials(String name) {
-        StringBuilder sb = new StringBuilder();
-        for (String word : name.split("[\\s&]+")) {
-            if (!word.isEmpty()) sb.append(word.charAt(0));
-        }
-        return sb.toString();
     }
 
     private int listX() {

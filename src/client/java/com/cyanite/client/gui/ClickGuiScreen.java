@@ -47,6 +47,8 @@ public class ClickGuiScreen extends Screen {
     private boolean closing;
     private boolean pressed;
     private Tutorial tutorial;
+    /** The key a Bind setting just took: its character mustn't land in the search box too. */
+    private int eatKey;
 
     public ClickGuiScreen() {
         this(null, lastTab);
@@ -110,6 +112,7 @@ public class ClickGuiScreen extends Screen {
             new Tutorial.Step(0, "Tabs", "Everything lives in these tabs: your modules, the HUD, how this menu looks, your profiles and the Donut SMP tools.", tabs::bounds),
             new Tutorial.Step(0, "Categories", "Modules are grouped into windows like this one. Drag a window by its title to move it, or click the title to fold it away.", () -> ModulesPage.window(Category.COMBAT)),
             new Tutorial.Step(0, "Turning modules on", "Left click a module to switch it on or off. Right click it to show its settings right underneath.", () -> ModulesPage.firstRow(Category.COMBAT)),
+            new Tutorial.Step(0, "Search", "Just start typing to find a module by its name, a setting or what it does. Enter switches the top match on or off, and Esc clears it.", () -> ((ModulesPage) pages[0]).searchBounds()),
             new Tutorial.Step(0, "Bigger modules", "Modules with lots of settings show a few, then an All settings button that opens the rest in their own window.", () -> ModulesPage.window(Category.RENDER)),
             new Tutorial.Step(0, "Keybinds", "Every module has a Bind setting. Click it and press a key, and that key turns the module on and off while you play. Insert opens this menu.", () -> Rect.EMPTY),
             new Tutorial.Step(1, "The HUD", "Switch the watermark and arraylist on or off and change how they look. While this tab is open you can drag them anywhere on screen.", () -> pages[1].bounds()),
@@ -231,6 +234,7 @@ public class ClickGuiScreen extends Screen {
 
         Page page = page();
         Hud.editing = page instanceof HudPage;
+        page.tabBar(tabs.bounds());
         page.resize(uiWidth, uiHeight);
         page.shownFor += dt;
         page.render(g, mouseX, mouseY, dt, alpha);
@@ -324,7 +328,11 @@ public class ClickGuiScreen extends Screen {
     @Override
     public boolean keyPressed(KeyEvent event) {
         if (tutorial != null && tutorial.keyPressed(event)) return true;
-        if (SettingsList.captureKey(event)) return true;
+        boolean binding = SettingsList.isListening();
+        if (SettingsList.captureKey(event)) {
+            if (binding) eatKey = event.key();
+            return true;
+        }
         if (page().keyPressed(event)) return true;
 
         if (CyaniteClientMod.clickGuiKey().matches(event)) {
@@ -337,6 +345,11 @@ public class ClickGuiScreen extends Screen {
     @Override
     public boolean charTyped(CharacterEvent event) {
         if (tutorial != null) return true;
+        if (eatKey != 0) {
+            int eaten = eatKey;
+            eatKey = 0;
+            if (Character.toUpperCase(event.codepoint()) == eaten) return true;
+        }
         if (SettingsList.captureChar(event)) return true;
         return page().charTyped(event) || super.charTyped(event);
     }

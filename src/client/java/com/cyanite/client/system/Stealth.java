@@ -92,7 +92,7 @@ public final class Stealth {
     }
 
     /** Notes a chat line the client wrote, so it can be taken back out when going hidden. */
-    static void wrote(Component line) {
+    public static void wrote(Component line) {
         OURS.add(line);
         ORDER.addLast(line);
         while (ORDER.size() > KEEP) OURS.remove(ORDER.removeFirst());

@@ -1108,7 +1108,8 @@ public class SchematicBuilder extends Module {
         double seconds = (System.currentTimeMillis() - startedAt) / 1000.0;
         StringBuilder sb = new StringBuilder();
         sb.append("Placed ").append(placedCount).append(brokenCount > 0 ? ", broke " + brokenCount : "")
-            .append(" in ").append(seconds < 60 ? Math.round(seconds) + "s" : (int) seconds / 60 + "m " + Math.round(seconds % 60) + "s");
+            // Rounded first, or 419.6 s comes out as "6m 60s".
+            .append(" in ").append(Math.round(seconds) < 60 ? Math.round(seconds) + "s" : Math.round(seconds) / 60 + "m " + Math.round(seconds) % 60 + "s");
         if (spent > 0) sb.append(", spent ").append(dollars(spent));
         if (left > 0) {
             Map<Item, Integer> lacking = new HashMap<>();

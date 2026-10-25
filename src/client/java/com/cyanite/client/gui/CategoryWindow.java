@@ -10,13 +10,17 @@ import com.google.gson.JsonObject;
 import com.mojang.blaze3d.platform.cursor.CursorTypes;
 import net.minecraft.client.gui.GuiGraphics;
 
+import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
  * One draggable, collapsible panel per category. Left click a module to toggle it,
- * right click to open its settings. Positions and sizes are in GUI units.
+ * right click to open its settings. Positions and sizes are in GUI units. While the menu's
+ * search has something in it, each window shows only the modules that match, and windows
+ * with none fold away and fade.
  */
 public class CategoryWindow {
     public static final int WIDTH = 124;
@@ -49,6 +53,14 @@ public class CategoryWindow {
     private float scroll;
     private float scrollTarget;
 
+    /** The module Enter would switch: the menu's best search match, wherever it is. */
+    static Module best;
+    // The search (stripped, lower case; empty for none), what in here matches it, and why.
+    private String query = "";
+    private List<Module> matches = List.of();
+    private final Map<Module, ModuleSearch.Hit> hits = new IdentityHashMap<>();
+    private float dim;
+
     public CategoryWindow(Category category) {
         this.category = category;
     }
@@ -62,8 +74,40 @@ public class CategoryWindow {
         return ROW + Math.round(row.inlineHeight() * row.expand);
     }
 
+    /** Shows only the modules matching {@code q} (stripped, lower case); empty shows them all. */
+    void filter(String q) {
+        if (q.equals(query)) return;
+        query = q;
+        hits.clear();
+        List<Module> list = new ArrayList<>();
+        if (!q.isEmpty()) {
+            for (Module module : Modules.get(category)) {
+                ModuleSearch.Hit hit = ModuleSearch.match(module, q);
+                if (hit == null) continue;
+                hits.put(module, hit);
+                list.add(module);
+            }
+        }
+        matches = list;
+        scrollTarget = 0;
+    }
+
+    private boolean searching() {
+        return !query.isEmpty();
+    }
+
+    /** The rows: every module, or while searching just the ones that match. */
+    private List<Module> modules() {
+        return searching() ? matches : Modules.get(category);
+    }
+
+    /** Open as far as you can see: searching opens windows with matches and folds the rest. */
+    private boolean shownOpen() {
+        return searching() ? !matches.isEmpty() : open;
+    }
+
     private int contentHeight() {
-        List<Module> modules = Modules.get(category);
+        List<Module> modules = modules();
         if (modules.isEmpty()) return PAD * 2 + ROW;
 
         int h = PAD * 2;
@@ -115,8 +159,11 @@ public class CategoryWindow {
     }
 
     public void render(GuiGraphics g, int mouseX, int mouseY, float dt, float alpha, boolean hovered) {
-        float target = open ? 1 : 0;
+        float target = shownOpen() ? 1 : 0;
         expand = Math.abs(expand - target) < 0.002f ? target : Anim.approach(expand, target, dt, 16);
+        // Nothing in here matches: it steps back so the windows that do stand out.
+        dim = Anim.approach(dim, searching() && matches.isEmpty() ? 1 : 0, dt, 12);
+        alpha *= 1 - dim * 0.6f;
 
         boolean overHeader = hovered && Page.inside(mouseX, mouseY, x, y, WIDTH, HEADER);
         headerHover = Anim.approach(headerHover, overHeader || dragging ? 1 : 0, dt, 14);
@@ -154,7 +201,7 @@ public class CategoryWindow {
     private void renderBody(GuiGraphics g, int mouseX, int mouseY, float dt, float alpha, boolean hovered, int body) {
         g.enableScissor(x, y + HEADER, x + WIDTH, y + HEADER + body);
 
-        List<Module> modules = Modules.get(category);
+        List<Module> modules = modules();
         int rowY = contentTop();
 
         if (modules.isEmpty()) {
@@ -255,6 +302,11 @@ public class CategoryWindow {
         int textY = rowY + (ROW - Text.CAP) / 2;
 
         Render2D.pixels(g);
+        if (module == best) {
+            // What Enter switches.
+            Render2D.glow(g, rx, ry, rw, rh, 2 * s, 5 * s, Theme.alpha(accent, 40 * glow * alpha));
+            Render2D.rect(g, rx, ry, rw, rh, 2 * s, Theme.alpha(accent, 34 * alpha));
+        }
         Render2D.rect(g, rx, ry, rw, rh, 2 * s, Theme.alpha(0xFFFFFF, row.hover * 12 * alpha));
         Render2D.fadeRight(g, rx, ry, rw, rh, Theme.alpha(accent, row.on * 60 * alpha));
 
@@ -284,6 +336,33 @@ public class CategoryWindow {
         g.pose().translate(nudge / (float) s, 0);
         Text.draw(g, module.name, textX, textY, Theme.fade(color, alpha));
         g.pose().popMatrix();
+
+        ModuleSearch.Hit hit = hits.get(module);
+        if (hit != null) drawWhy(g, module, hit, textX * s + nudge, textY, alpha);
+    }
+
+    /** Why a module matched: what was typed underlined in its name, or the setting it matched by. */
+    private void drawWhy(GuiGraphics g, Module module, ModuleSearch.Hit hit, int namePx, int textY, float alpha) {
+        int s = Render2D.scale();
+        int at = module.name.toLowerCase(Locale.ROOT).indexOf(query);
+        if (hit.score() <= ModuleSearch.INSIDE && at >= 0) {
+            int from = namePx + Text.width(module.name.substring(0, at)) * s;
+            int w = Text.width(module.name.substring(at, at + query.length())) * s;
+            int lineY = (textY + Text.CAP + 1) * s;
+            Render2D.pixels(g);
+            g.fill(from, lineY, from + w, lineY + Math.max(1, s / 2), Theme.fade(Theme.accentText(), alpha));
+            Render2D.end(g);
+        } else if (hit.setting() != null) {
+            // In the gap between the name and the chevron, cut short if it has to be.
+            int room = WIDTH - 9 - Text.width(module.name) - 8 - 17;
+            String label = hit.setting().name;
+            if (Text.width(label) > room) {
+                String cut = label;
+                while (cut.length() > 2 && Text.width(cut + "…") > room) cut = cut.substring(0, cut.length() - 1);
+                label = cut.length() > 2 ? cut + "…" : null;
+            }
+            if (label != null) Text.draw(g, label, x + WIDTH - 17 - Text.width(label), textY, Theme.fade(Theme.TEXT_FAINT, alpha));
+        }
     }
 
     /** @return true if this window consumed the click. */
@@ -294,17 +373,17 @@ public class CategoryWindow {
                 moved = false;
                 grabX = mouseX - x;
                 grabY = mouseY - y;
-            } else if (button == 1) {
+            } else if (button == 1 && !searching()) {
                 open = !open;
             }
             return true;
         }
 
         if (!isOver(mouseX, mouseY)) return false;
-        if (!open || expand < 0.98f) return true;
+        if (!shownOpen() || expand < 0.98f) return true;
 
         int rowY = contentTop();
-        for (Module module : Modules.get(category)) {
+        for (Module module : modules()) {
             Row row = row(module);
 
             if (Page.inside(mouseX, mouseY, x, rowY, WIDTH, ROW)) {
@@ -339,7 +418,7 @@ public class CategoryWindow {
         }
         if (dragging && button == 0) {
             dragging = false;
-            if (!moved) open = !open;
+            if (!moved && !searching()) open = !open;
         }
     }
 

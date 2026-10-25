@@ -30,6 +30,11 @@ public class InventoryMove extends Module {
         for (KeyMapping key : keys()) key.setDown(Keys.isHeld(key));
     }
 
+    /** On, and walking you around while the click GUI is open (so typing there isn't a search). */
+    public boolean walksInClickGui() {
+        return isEnabled() && clickGui.get();
+    }
+
     private boolean applies() {
         if (mc.screen instanceof ClickGuiScreen gui) return clickGui.get() && !gui.isTyping();
         if (mc.screen instanceof BetaGuiScreen gui) return clickGui.get() && !gui.isTyping();

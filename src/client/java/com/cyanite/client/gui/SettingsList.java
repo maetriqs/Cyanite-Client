@@ -186,6 +186,8 @@ final class SettingsList {
 
         String value = text.get();
         boolean showPlaceholder = value.isEmpty() && !focused;
+        // Secret ones (webhooks) never show: dots while typing, then just that it's set.
+        if (text.isSecret() && !value.isEmpty()) value = focused ? "•".repeat(Math.min(value.length(), 12)) : "set, hidden";
         String shown = fitTail(showPlaceholder ? text.placeholder() : value, Math.max(8, end - left));
         int color = showPlaceholder ? Theme.TEXT_FAINT : focused ? Theme.TEXT : Theme.accentText();
         Text.draw(g, shown, end - Text.width(shown), textY, Theme.fade(color, alpha));

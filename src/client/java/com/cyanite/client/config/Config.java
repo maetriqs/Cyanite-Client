@@ -66,7 +66,8 @@ public final class Config {
             JsonObject entry = new JsonObject();
             // Held off by Stealth Mode still counts as on, so it comes back after.
             entry.addProperty("enabled", module.isWanted());
-            if (!module.settings().isEmpty()) entry.add("settings", writeSettings(module.settings()));
+            // Profiles get shared: private settings (webhooks and the like) stay out of them.
+            if (!module.settings().isEmpty()) entry.add("settings", writeSettings(module.settings(), includeLayout));
             modules.add(module.name, entry);
         }
         root.add("modules", modules);
@@ -114,8 +115,14 @@ public final class Config {
     }
 
     private static JsonObject writeSettings(List<Setting<?>> settings) {
+        return writeSettings(settings, true);
+    }
+
+    private static JsonObject writeSettings(List<Setting<?>> settings, boolean withSecrets) {
         JsonObject json = new JsonObject();
-        for (Setting<?> setting : settings) json.add(setting.name, setting.toJson());
+        for (Setting<?> setting : settings) {
+            if (withSecrets || !setting.isSecret()) json.add(setting.name, setting.toJson());
+        }
         return json;
     }
 

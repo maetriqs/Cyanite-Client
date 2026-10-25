@@ -27,6 +27,12 @@ public class StringSetting extends Setting<String> {
         return placeholder;
     }
 
+    /** Hidden in the menu and never saved into profiles (see {@link Setting#isSecret()}). */
+    public StringSetting secret() {
+        markSecret();
+        return this;
+    }
+
     public boolean isBlank() {
         return value.isBlank();
     }
