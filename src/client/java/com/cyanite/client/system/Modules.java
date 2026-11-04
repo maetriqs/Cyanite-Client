@@ -59,6 +59,7 @@ import com.cyanite.client.modules.render.BlockESP;
 import com.cyanite.client.modules.render.Breadcrumbs;
 import com.cyanite.client.modules.render.Lyrics;
 import com.cyanite.client.modules.render.ESP;
+import com.cyanite.client.modules.render.FovChanger;
 import com.cyanite.client.modules.render.Freecam;
 import com.cyanite.client.modules.render.Zoom;
 import com.cyanite.client.modules.render.Waypoints;
@@ -158,6 +159,7 @@ public final class Modules {
         register(new Nametags());
         register(new Freecam());
         register(new Zoom());
+        register(new FovChanger());
         register(new Waypoints());
         register(new Breadcrumbs());
         register(new Lyrics());

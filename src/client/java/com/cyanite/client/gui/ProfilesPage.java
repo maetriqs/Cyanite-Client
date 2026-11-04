@@ -4,6 +4,7 @@ import com.cyanite.client.config.Profiles;
 import com.cyanite.client.gui.render.Render2D;
 import com.cyanite.client.gui.render.Text;
 import com.mojang.blaze3d.platform.cursor.CursorTypes;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
@@ -18,7 +19,7 @@ import java.util.List;
 import java.util.Map;
 
 final class ProfilesPage extends Page {
-    private static final int W = 236;
+    private static final int W = 272;
     private static final int HEADER = 18;
     private static final int PAD = 6;
     private static final int FIELD = 14;
@@ -80,6 +81,9 @@ final class ProfilesPage extends Page {
         int openX = x + W - 8 - Text.width(open);
         textButton(g, "open", open, openX, y + (HEADER - Text.CAP) / 2, mouseX, mouseY, dt, a,
             Theme.TEXT_FAINT, Theme.accentText(), this::openFolder);
+        String paste = "Paste";
+        textButton(g, "paste", paste, openX - 10 - Text.width(paste), y + (HEADER - Text.CAP) / 2, mouseX, mouseY, dt, a,
+            Theme.TEXT_FAINT, Theme.accentText(), this::paste);
 
         int fieldY = y + HEADER + PAD;
         int fieldW = W - PAD * 2 - SAVE_W - 4;
@@ -103,7 +107,7 @@ final class ProfilesPage extends Page {
         int statusY = listY + rows * ROW + PAD;
         if (statusLeft > 0) {
             float fade = Math.min(1, statusLeft / 0.4f);
-            Text.draw(g, status, x + PAD + 2, statusY, Theme.fade(statusError ? Theme.DANGER : Theme.TEXT_DIM, a * fade));
+            Text.draw(g, fit(status, W - PAD * 2 - 4), x + PAD + 2, statusY, Theme.fade(statusError ? Theme.DANGER : Theme.TEXT_DIM, a * fade));
         } else if (Profiles.active() != null) {
             Text.draw(g, "Active: " + Profiles.active(), x + PAD + 2, statusY, Theme.fade(Theme.TEXT_FAINT, a));
         }
@@ -130,9 +134,8 @@ final class ProfilesPage extends Page {
 
         int textY = rowY + (ROW - Text.CAP) / 2;
         int nameColor = active ? Theme.accentText() : Theme.mix(Theme.TEXT_DIM, Theme.TEXT, h);
-        Text.draw(g, entry.name(), x + 10, textY, Theme.fade(nameColor, a));
 
-        // Right to left: delete, save, load.
+        // Right to left: delete, save, load, copy.
         String key = entry.name();
         boolean confirm = key.equals(confirming);
         int right = x + W - 10;
@@ -149,6 +152,20 @@ final class ProfilesPage extends Page {
         right -= 10 + Text.width("Load");
         textButton(g, "load:" + key, "Load", right, textY, mouseX, mouseY, dt, a,
             Theme.TEXT_DIM, Theme.accentText(), () -> load(key));
+
+        right -= 10 + Text.width("Copy");
+        textButton(g, "copy:" + key, "Copy", right, textY, mouseX, mouseY, dt, a,
+            Theme.TEXT_FAINT, Theme.accentText(), () -> copy(key));
+
+        Text.draw(g, fit(entry.name(), right - 8 - (x + 10)), x + 10, textY, Theme.fade(nameColor, a));
+    }
+
+    /** The name, cut short with an ellipsis if it would run into the buttons. */
+    private static String fit(String name, int room) {
+        if (Text.width(name) <= room) return name;
+        String cut = name;
+        while (cut.length() > 1 && Text.width(cut + "\u2026") > room) cut = cut.substring(0, cut.length() - 1);
+        return cut.strip() + "\u2026";
     }
 
     private void renderScrollbar(GuiGraphics g, int listY, int rows, float a) {
@@ -237,6 +254,28 @@ final class ProfilesPage extends Page {
         confirming = null;
         boolean ok = Profiles.delete(profile);
         setStatus(ok ? "Deleted " + profile : "Couldn't delete " + profile, !ok);
+        refresh();
+    }
+
+    /** The profile as a CyaniteProfile:[...] line on the clipboard, to paste to someone. */
+    private void copy(String profile) {
+        String text = Profiles.share(profile);
+        if (text == null) {
+            setStatus("Couldn't read " + profile, true);
+            return;
+        }
+        Minecraft.getInstance().keyboardHandler.setClipboard(text);
+        setStatus("Copied " + profile + " to the clipboard", false);
+    }
+
+    /** A CyaniteProfile:[...] line from the clipboard, added to the list (Load puts it on). */
+    private void paste() {
+        Profiles.Imported added = Profiles.importShared(Minecraft.getInstance().keyboardHandler.getClipboard());
+        if (added.problem() != null) {
+            setStatus(added.problem(), true);
+            return;
+        }
+        setStatus("Added " + added.name() + ": Load puts it on", false);
         refresh();
     }
 

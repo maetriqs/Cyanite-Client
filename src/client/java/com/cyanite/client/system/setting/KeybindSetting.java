@@ -26,7 +26,7 @@ public class KeybindSetting extends Setting<Integer> {
     }
 
     @Override
-    public JsonElement toJson() {
+    protected JsonElement write(Integer value) {
         return new JsonPrimitive(value);
     }
 

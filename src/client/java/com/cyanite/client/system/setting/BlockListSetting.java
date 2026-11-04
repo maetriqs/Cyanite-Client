@@ -31,7 +31,7 @@ public class BlockListSetting extends Setting<List<Block>> {
     }
 
     @Override
-    public JsonElement toJson() {
+    protected JsonElement write(List<Block> value) {
         JsonArray array = new JsonArray();
         for (Block block : value) array.add(BuiltInRegistries.BLOCK.getKey(block).toString());
         return array;

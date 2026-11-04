@@ -13,7 +13,7 @@ public class BoolSetting extends Setting<Boolean> {
     }
 
     @Override
-    public JsonElement toJson() {
+    protected JsonElement write(Boolean value) {
         return new JsonPrimitive(value);
     }
 

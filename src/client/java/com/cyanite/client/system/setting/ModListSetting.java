@@ -28,7 +28,7 @@ public class ModListSetting extends Setting<List<String>> {
     }
 
     @Override
-    public JsonElement toJson() {
+    protected JsonElement write(List<String> value) {
         JsonArray array = new JsonArray();
         for (String id : value) array.add(id);
         return array;

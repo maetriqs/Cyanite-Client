@@ -27,7 +27,7 @@ public class ColorSetting extends Setting<Integer> {
     }
 
     @Override
-    public JsonElement toJson() {
+    protected JsonElement write(Integer value) {
         return new JsonPrimitive(String.format("#%06X", value));
     }
 

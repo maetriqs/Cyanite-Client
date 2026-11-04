@@ -20,7 +20,7 @@ Cyanite updates itself. When you start the game, it checks this repository's rel
 | --- | --- |
 | Combat | Aim Assist, Anti Bot, Auto Anchor, Auto Armor, Auto Clicker, Auto Gap, Auto Log, Auto Totem, Auto Weapon, Bow Aimbot, Criticals, Hitboxes, Kill Aura, Pop Counter, Surround, Trigger Bot, Velocity |
 | Movement | Auto Trident, Auto Walk, Boat Fly, Flight, Jesus, No Clip, No Fall, No Slow, Safe Walk, Speed, Spider, Sprint, Step |
-| Render | Block ESP, Breadcrumbs, ESP, F5 Camera, Freecam, Fullbright, Lyrics, Motion Blur, Nametags, No Fog, No Hurt Cam, Pearl ESP, Search, Small Totem, Storage ESP, Tracers, Villager ESP, Waypoints, Xray, Zoom |
+| Render | Block ESP, Breadcrumbs, ESP, F5 Camera, FOV Changer, Freecam, Fullbright, Lyrics, Motion Blur, Nametags, No Fog, No Hurt Cam, Pearl ESP, Search, Small Totem, Storage ESP, Tracers, Villager ESP, Waypoints, Xray, Zoom |
 | Player | Auto Eat, Auto Fish, Auto Respawn, Chest Stealer, Fast Place, Hotbar Refill, Inventory Move |
 | World | Area Miner, Auto Mine, Auto Tool, Bedrock Burrow, Chest Index, Fast Break, Fast Mine, Scaffold, Schematic Builder, Timer |
 | Misc | Anti AFK, Anti Mod Check, Anti Vanish, Base Guard, Clips, Death Position, Discord RPC, Message Logger, Name Protect, Pets, Stealth Mode, Streamer Mode |

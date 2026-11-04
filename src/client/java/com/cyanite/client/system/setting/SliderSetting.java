@@ -69,7 +69,7 @@ public class SliderSetting extends Setting<Double> {
     }
 
     @Override
-    public JsonElement toJson() {
+    protected JsonElement write(Double value) {
         return new JsonPrimitive(value);
     }
 

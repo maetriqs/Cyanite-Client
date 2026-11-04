@@ -58,7 +58,17 @@ public abstract class Setting<T> {
         return value;
     }
 
-    public abstract JsonElement toJson();
+    public JsonElement toJson() {
+        return write(value);
+    }
+
+    /** The default, as {@link #toJson} would save it. */
+    public JsonElement defaultJson() {
+        return write(defaultValue);
+    }
+
+    /** One value as it's saved. */
+    protected abstract JsonElement write(T value);
 
     /** Applies a saved value. Anything malformed is ignored and the current value kept. */
     public abstract void fromJson(JsonElement json);

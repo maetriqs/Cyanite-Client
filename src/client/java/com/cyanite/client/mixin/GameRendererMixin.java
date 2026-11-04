@@ -26,6 +26,19 @@ public class GameRendererMixin {
         if (zoom != 1) cir.setReturnValue((float) (cir.getReturnValue() / zoom));
     }
 
+    // FOV Changer: its FOV in place of the one in Options (the hand's path doesn't read it).
+    @ModifyExpressionValue(method = "getFov", at = @At(value = "INVOKE", target = "Ljava/lang/Integer;intValue()I"))
+    private int cyanite$fovChanger(int fov) {
+        return com.cyanite.client.modules.render.FovChanger.fov(fov);
+    }
+
+    // FOV Changer's Steady: sprinting, Speed and bows don't widen or narrow it.
+    @ModifyExpressionValue(method = "tickFov", at = @At(value = "INVOKE",
+        target = "Lnet/minecraft/client/player/AbstractClientPlayer;getFieldOfViewModifier(ZF)F"))
+    private float cyanite$steadyFov(float modifier) {
+        return com.cyanite.client.modules.render.FovChanger.steady() ? 1.0F : modifier;
+    }
+
     @Inject(method = "render", at = @At(value = "INVOKE", shift = At.Shift.AFTER,
         target = "Lnet/minecraft/client/renderer/GameRenderer;renderLevel(Lnet/minecraft/client/DeltaTracker;)V"))
     private void cyanite$motionBlur(net.minecraft.client.DeltaTracker deltaTracker, boolean renderLevel, CallbackInfo ci) {

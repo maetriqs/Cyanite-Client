@@ -44,7 +44,7 @@ public class StringSetting extends Setting<String> {
     }
 
     @Override
-    public JsonElement toJson() {
+    protected JsonElement write(String value) {
         return new JsonPrimitive(value);
     }
 
