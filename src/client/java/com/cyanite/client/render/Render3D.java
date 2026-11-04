@@ -16,6 +16,8 @@ import com.mojang.blaze3d.vertex.VertexFormat;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.fog.FogRenderer;
 import net.minecraft.client.renderer.rendertype.RenderSetup;
@@ -23,13 +25,15 @@ import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
+import org.joml.Quaternionf;
 import org.joml.Vector3fc;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * World-space drawing for ESP-style features: boxes and lines that show through walls.
+ * World-space drawing for ESP-style features: boxes, lines and text that show through walls.
  * Modules queue shapes from {@code onRender3D} each frame and everything is drawn in one
  * go at the end of the main world pass. Positions are world coordinates.
  */
@@ -46,11 +50,15 @@ public final class Render3D {
     private final float partialTick;
     private final List<Box> boxes = new ArrayList<>();
     private final List<Line> segments = new ArrayList<>();
+    private final List<Label> labels = new ArrayList<>();
 
     private record Box(AABB box, int fill, int outline, float width, boolean glow) {
     }
 
     private record Line(Vec3 from, Vec3 to, int color, float width, boolean glow) {
+    }
+
+    private record Label(Vec3 at, Quaternionf facing, float size, float x, float y, String text, int color, int background, boolean seeThrough) {
     }
 
     private Render3D(Vec3 camera, Vector3fc forward, float partialTick) {
@@ -81,6 +89,21 @@ public final class Render3D {
         segments.add(new Line(from, to, color, width, glow));
     }
 
+    /**
+     * Text standing in the world, in Minecraft's font with a drop shadow.
+     *
+     * @param at         where font pixel (0, 0) is
+     * @param facing     turns the text the way a camera with this rotation looks, so it reads facing back at it
+     * @param size       blocks per font pixel (name tags are 0.025)
+     * @param x          font pixels right of {@code at}
+     * @param y          font pixels down from {@code at}, to the top of the text
+     * @param background ARGB behind the text; alpha 0 for none
+     * @param seeThrough drawn over everything, walls included; otherwise hidden behind blocks
+     */
+    public void text(Vec3 at, Quaternionf facing, float size, float x, float y, String text, int color, int background, boolean seeThrough) {
+        labels.add(new Label(at, facing, size, x, y, text, color, background, seeThrough));
+    }
+
     /** A line from the middle of the screen out to {@code to}. */
     public void tracer(Vec3 to, int color, float width, boolean glow) {
         // Start a little in front of the eye; a line from exactly the eye has no length on screen.
@@ -97,7 +120,7 @@ public final class Render3D {
         Render3D frame = new Render3D(cam.position(), cam.forwardVector(), mc.getDeltaTracker().getGameTimeDeltaPartialTick(true));
         Modules.render3D(frame);
         com.cyanite.client.modules.world.build.StandIns.render(frame);
-        if (frame.boxes.isEmpty() && frame.segments.isEmpty()) return;
+        if (frame.boxes.isEmpty() && frame.segments.isEmpty() && frame.labels.isEmpty()) return;
 
         frame.flush(context.matrices().last(), mc.getWindow().getHeight() / 1080f);
     }
@@ -139,6 +162,19 @@ public final class Render3D {
             segment(edges, pose, l.from, l.to, l.color, l.width * pixelScale);
         }
         buffers.endBatch(lines);
+
+        if (labels.isEmpty()) return;
+        Font font = Minecraft.getInstance().font;
+        Matrix4f m = new Matrix4f();
+        for (Label l : labels) {
+            m.set(pose.pose())
+                .translate((float) (l.at.x - camera.x), (float) (l.at.y - camera.y), (float) (l.at.z - camera.z))
+                .rotate(l.facing)
+                .scale(l.size, -l.size, l.size);
+            font.drawInBatch(l.text, l.x, l.y, l.color, true, m, buffers,
+                l.seeThrough ? Font.DisplayMode.SEE_THROUGH : Font.DisplayMode.NORMAL, l.background, LightTexture.FULL_BRIGHT);
+        }
+        buffers.endBatch();
     }
 
     private static int faint(int argb) {

@@ -95,8 +95,11 @@ public class CyaniteClientMod implements ClientModInitializer {
         ClientReceiveMessageEvents.ALLOW_GAME.register((message, overlay) -> overlay || FakePay.allowChat(message));
         ClientReceiveMessageEvents.MODIFY_GAME.register((message, overlay) -> overlay ? message : FakePay.modifyChat(message));
         ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
-            if (overlay) return;
+            // The auction house answers in the action bar as well as chat ("This item was already bought").
             com.cyanite.client.modules.donut.AuctionBuyer.onServerMessage(message.getString());
+            if (overlay) return;
+            // Chat only: the same sale in the action bar would be counted twice.
+            com.cyanite.client.modules.donut.SellMenu.onServerMessage(message.getString());
             Macros.onChat(message.getString());
             AntiVanish.onChat(message.getString());
         });

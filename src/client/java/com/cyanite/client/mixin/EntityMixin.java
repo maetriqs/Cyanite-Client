@@ -1,5 +1,6 @@
 package com.cyanite.client.mixin;
 
+import com.cyanite.client.modules.render.F5Camera;
 import com.cyanite.client.modules.render.Freecam;
 import com.cyanite.client.system.HumanAim;
 import com.cyanite.client.system.Modules;
@@ -40,15 +41,23 @@ public class EntityMixin {
         return (Object) this == Minecraft.getInstance().player && !HumanAim.isTurning();
     }
 
-    // Mouse look turns the Freecam camera instead of the player.
+    // Mouse look turns the Freecam camera, or F5 Camera's free look, instead of the player.
     @Inject(method = "turn", at = @At("HEAD"), cancellable = true)
     private void cyanite$freecamLook(double yRot, double xRot, CallbackInfo ci) {
         if ((Object) this != Minecraft.getInstance().player) return;
         // A module aiming the player (Auto Mine, Aim Assist...) turns the player, not the camera.
         if (HumanAim.isTurning()) return;
         Freecam freecam = Modules.get(Freecam.class);
-        if (freecam == null || !freecam.isActive()) return;
-        freecam.turn(yRot, xRot);
-        ci.cancel();
+        if (freecam != null && freecam.isActive()) {
+            freecam.turn(yRot, xRot);
+            ci.cancel();
+            return;
+        }
+        // F5 Camera's free look: the camera swings round you and your player keeps facing the same way.
+        F5Camera f5 = Modules.get(F5Camera.class);
+        if (f5 != null && f5.freeLooking()) {
+            f5.turn(yRot, xRot);
+            ci.cancel();
+        }
     }
 }

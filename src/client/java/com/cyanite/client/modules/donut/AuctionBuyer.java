@@ -27,10 +27,13 @@ import java.util.Locale;
 
 /**
  * Buys an item off DonutSMP's auction house, the way you would: /ah and the item's name (with
- * "stack" on the end when it wants 64 or more, which lists only full stacks), the cheapest listing
+ * "stack" on the end when it wants 64 or more, which lists only full stacks, or every time when
+ * it's buying whole stacks), the cheapest listing
  * of the right item under the price cap clicked, the confirm button clicked, and a check that it
  * actually turned up in your inventory. It searches again until it has enough, runs out of
- * affordable listings, or hits its budget.
+ * affordable listings, or hits its budget. A listing someone else bought just before its click
+ * landed ("This item was already bought", in chat or the action bar) means searching again for
+ * the next one, up to five in a row.
  *
  * <p>With the server's confirm screen turned off (DonutSMP lets you), a click on the listing buys
  * it, and nothing else is ever clicked: it only waits for the items to arrive. It closes the menu
@@ -48,8 +51,12 @@ public final class AuctionBuyer {
     private static final long SETTLE = 450;
     private static final long ITEM_WAIT = 4500;
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
+    /** Listings snapped up by someone else before its click landed, in a row: this many and it stops. */
+    private static final int MAX_SNIPED = 5;
     /** A "not enough money" or the like from the server while buying. */
     private static volatile String refusal;
+    /** A "this item was already bought": someone else got to the listing first. */
+    private static volatile String sniped;
 
     private final Minecraft mc = Minecraft.getInstance();
     private Item item;
@@ -68,15 +75,26 @@ public final class AuctionBuyer {
     private double cheapest = Double.NaN;
     private boolean active;
     private boolean confirm;
+    private int snipedInRow;
+    private boolean wholeStacks;
+    /** Whole stacks wanted, but none listed under the cap: the rest however it's listed. */
+    private boolean noStacks;
+    /** The search just sent had "stack" on the end: full stacks only. */
+    private boolean stackSearch;
     private long sendAfter;
     private final java.util.Random random = new java.util.Random();
 
     /**
      * Starts buying {@code count} of {@code item}, at no more than {@code maxEach} apiece and
      * {@code budget} in all. {@code confirm}: the server asks to confirm each purchase in a menu.
+     * {@code wholeStacks}: full stacks only, rounding up (148 is three stacks), for when what's
+     * over is sold back anyway; if no full stack's listed under the cap, the rest is bought
+     * however it's listed.
      */
-    public void start(Item item, int count, double maxEach, double budget, boolean confirm) {
+    public void start(Item item, int count, double maxEach, double budget, boolean confirm, boolean wholeStacks) {
         this.confirm = confirm;
+        this.wholeStacks = wholeStacks;
+        this.noStacks = false;
         this.item = item;
         this.want = count;
         this.maxEach = maxEach;
@@ -86,10 +104,12 @@ public final class AuctionBuyer {
         this.why = "";
         this.cheapest = Double.NaN;
         refusal = null;
+        sniped = null;
+        snipedInRow = 0;
         active = true;
         go(Stage.CLOSE_FIRST);
         log("Buying " + count + " " + name(item) + " (max $" + money(maxEach) + " each, budget $" + money(budget) + ", "
-            + (confirm ? "confirm screen" : "no confirm screen") + ")");
+            + (confirm ? "confirm screen" : "no confirm screen") + (wholeStacks ? ", whole stacks" : "") + ")");
     }
 
     public boolean active() {
@@ -119,11 +139,18 @@ public final class AuctionBuyer {
         active = false;
     }
 
-    /** A message from the server: one that says the purchase can't happen stops it. */
+    /**
+     * A message from the server, in chat or the action bar. One that says the listing's gone
+     * (someone else bought it first) means looking again; one that says the purchase can't happen
+     * stops it.
+     */
     public static void onServerMessage(String text) {
         String lower = text.toLowerCase(Locale.ROOT);
-        if (lower.contains("enough money") || lower.contains("can't afford") || lower.contains("cannot afford")
-            || lower.contains("insufficient") || lower.contains("not enough") || lower.contains("no longer available")) {
+        if (lower.contains("already bought") || lower.contains("already been bought") || lower.contains("already sold")
+            || lower.contains("already been sold") || lower.contains("no longer available") || lower.contains("no longer exists")) {
+            sniped = text;
+        } else if (lower.contains("enough money") || lower.contains("can't afford") || lower.contains("cannot afford")
+            || lower.contains("insufficient") || lower.contains("not enough")) {
             refusal = text;
         }
     }
@@ -137,6 +164,21 @@ public final class AuctionBuyer {
             log("Server said: " + refused);
             return finish(got > 0 ? Result.DONE : Result.FAILED, "the server said \"" + refused + "\"");
         }
+        String taken = sniped;
+        if (taken != null) {
+            sniped = null;
+            // Only a click of ours still waiting on its item; the same message again (chat, then
+            // action bar) once it's already looking again is let go.
+            if ((stage == Stage.CONFIRM || stage == Stage.WAIT_ITEM) && count(item) <= before) {
+                log("Server said: " + taken);
+                if (++snipedInRow >= MAX_SNIPED) {
+                    return finish(got > 0 ? Result.DONE : Result.FAILED, "listings kept being bought before its click landed");
+                }
+                log("Someone else bought that listing first: looking again");
+                go(Stage.CLOSE_FIRST);
+                return Result.RUNNING;
+            }
+        }
         switch (stage) {
             case CLOSE_FIRST -> {
                 if (mc.screen != null) mc.player.closeContainer();
@@ -146,7 +188,8 @@ public final class AuctionBuyer {
             }
             case SEND -> {
                 if (now < sendAfter) return Result.RUNNING;
-                String query = name(item) + (want - got >= 64 ? " stack" : "");
+                stackSearch = wholeStacks ? !noStacks : want - got >= 64;
+                String query = name(item) + (stackSearch ? " stack" : "");
                 lastMenu = mc.player.containerMenu.containerId;
                 mc.player.connection.sendCommand("ah " + query);
                 log("> /ah " + query);
@@ -173,6 +216,7 @@ public final class AuctionBuyer {
                     if (slot.container instanceof Inventory) continue;
                     ItemStack stack = slot.getItem();
                     if (!stack.is(item)) continue;
+                    if (wholeStacks && stackSearch && stack.getCount() < stack.getMaxStackSize()) continue;
                     double[] p = price(stack);
                     if (p == null) continue;
                     if (Double.isNaN(cheapest) || p[1] < cheapest) cheapest = p[1];
@@ -182,6 +226,12 @@ public final class AuctionBuyer {
                         bestEach = p[1];
                         bestPrice = p[0];
                     }
+                }
+                if (best == null && wholeStacks && stackSearch) {
+                    log("No full stack listed under the cap: the rest however it's listed");
+                    noStacks = true;
+                    go(Stage.CLOSE_FIRST);
+                    return Result.RUNNING;
                 }
                 if (best == null) {
                     log("Nothing affordable listed");
@@ -225,6 +275,7 @@ public final class AuctionBuyer {
         int arrived = count(item) - before;
         got += arrived;
         spent += price;
+        snipedInRow = 0;
         log("Got " + arrived + " (" + got + "/" + want + "), spent $" + money(spent));
         if (got >= want) return finish(Result.DONE, "");
         if (spent >= budget) return finish(Result.DONE, "the budget's used up");

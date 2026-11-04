@@ -19,12 +19,12 @@ Cyanite updates itself. When you start the game, it checks this repository's rel
 | Category | Modules |
 | --- | --- |
 | Combat | Aim Assist, Anti Bot, Auto Anchor, Auto Armor, Auto Clicker, Auto Gap, Auto Log, Auto Totem, Auto Weapon, Bow Aimbot, Criticals, Hitboxes, Kill Aura, Pop Counter, Surround, Trigger Bot, Velocity |
-| Movement | Auto Walk, Boat Fly, Flight, Jesus, No Clip, No Fall, No Slow, Safe Walk, Speed, Spider, Sprint, Step |
-| Render | Block ESP, Breadcrumbs, ESP, F5 Camera, Freecam, Fullbright, Motion Blur, Nametags, No Fog, No Hurt Cam, Pearl ESP, Search, Small Totem, Storage ESP, Tracers, Villager ESP, Waypoints, Xray, Zoom |
+| Movement | Auto Trident, Auto Walk, Boat Fly, Flight, Jesus, No Clip, No Fall, No Slow, Safe Walk, Speed, Spider, Sprint, Step |
+| Render | Block ESP, Breadcrumbs, ESP, F5 Camera, Freecam, Fullbright, Lyrics, Motion Blur, Nametags, No Fog, No Hurt Cam, Pearl ESP, Search, Small Totem, Storage ESP, Tracers, Villager ESP, Waypoints, Xray, Zoom |
 | Player | Auto Eat, Auto Fish, Auto Respawn, Chest Stealer, Fast Place, Hotbar Refill, Inventory Move |
 | World | Area Miner, Auto Mine, Auto Tool, Bedrock Burrow, Chest Index, Fast Break, Fast Mine, Scaffold, Schematic Builder, Timer |
 | Misc | Anti AFK, Anti Mod Check, Anti Vanish, Base Guard, Clips, Death Position, Discord RPC, Message Logger, Name Protect, Pets, Stealth Mode, Streamer Mode |
-| Donut SMP | Auto Sell, Base Alert, Bounty & Balance, Depth Alert, Drill Logger, Drill Tester, Fake Pay, Relog, Scoreboard Spoof, Spawner Finder, Staff List, Sus Chunk Finder |
+| Donut SMP | Auto Sell, Base Alert, Bounty & Balance, Chunk Change Finder, Depth Alert, Drill Logger, Drill Tester, Fake Pay, Hidden Player Finder, Leak Finder, Relog, Scoreboard Spoof, Spawner Finder, Staff List, Sus Chunk Finder |
 
 Settings shown in **red** are ones anticheats catch. Use them only where that's allowed, and use Cyanite at your own risk.
 
@@ -41,6 +41,10 @@ The jar ends up in `build/libs/`.
 ## Releasing
 
 Every push to `main` is built by GitHub Actions. When the push changes `version` in `gradle.properties` to a version that hasn't been released yet, the workflow also publishes a release `v<version>` with the jar attached, and everyone's client picks it up on their next start. So releasing is: bump the version, commit, push.
+
+## Credits
+
+Some of the base-finding methods come from the Anubis client (GPL-3.0): Sus Chunk Finder's guess at where someone sits from the server's simulation distance, reading amethyst the server hides by its light, and most of its plant signs; Hidden Player Finder's "simulation ring", finding players by what ticks round them; Chunk Change Finder's trick of having the server resend the chunks round you and comparing them with what it sent before; and Leak Finder's reading of the block entities a chunk names, before the client drops the ones the server hides. Cyanite's code is its own, written from those ideas. Thanks to the Anubis devs.
 
 ## License
 

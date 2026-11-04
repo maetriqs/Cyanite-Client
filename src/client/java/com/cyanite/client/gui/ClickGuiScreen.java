@@ -34,8 +34,8 @@ public class ClickGuiScreen extends Screen {
         .map(mod -> "v" + mod.getMetadata().getVersion().getFriendlyString())
         .orElse("");
 
-    private final Page[] pages = {new ModulesPage(), new HudPage(), new GuiPage(), new ProfilesPage(), new DonutPage(), new AccountsPage(), new AreaMinerPage(), new MacrosPage()};
-    private final TabBar tabs = new TabBar("Modules", "HUD", "GUI", "Profiles", DonutSmp.NAME, "Accounts", "Area Miner", "Macros");
+    private final Page[] pages = {new ModulesPage(), new HudPage(), new GuiPage(), new ProfilesPage(), new DonutPage(), new AccountsPage(), new AreaMinerPage(), new SchematicBuilderPage(), new MacrosPage()};
+    private final TabBar tabs = new TabBar("Modules", "HUD", "GUI", "Profiles", DonutSmp.NAME, "Accounts", "Area Miner", "Schematic Builder", "Macros");
     private final Screen parent;
 
     private int unit = 1;
@@ -121,7 +121,8 @@ public class ClickGuiScreen extends Screen {
             new Tutorial.Step(4, DonutSmp.NAME, "Your server's tools: join in one click, run your saved commands, and load a profile automatically when you join.", () -> pages[4].bounds()),
             new Tutorial.Step(5, "Accounts", "Add Microsoft or cracked accounts and switch between them in one click. Insert opens this menu on the title screen and server list too, so you can switch before joining.", () -> pages[5].bounds()),
             new Tutorial.Step(6, "Area Miner", "Pick an area with two corners or a Litematica schematic, hold your drill and press Start. It digs the whole thing out, lane by lane, and never cuts past the edge.", () -> pages[6].bounds()),
-            new Tutorial.Step(7, "Macros", "Build macros out of steps: send commands, walk, look, mine, click menu slots, wait for chat. Share codes with friends and import theirs.", () -> pages[7].bounds()),
+            new Tutorial.Step(7, "Schematic Builder", "Place a schematic with Litematica, pick it here and press Start. It builds it like a player, buying what you're short of off /ah layer by layer, with lava and water by the bucket.", () -> pages[7].bounds()),
+            new Tutorial.Step(8, "Macros", "Build macros out of steps: send commands, walk, look, mine, click menu slots, wait for chat. Share codes with friends and import theirs.", () -> pages[8].bounds()),
             new Tutorial.Step(0, "You're all set", "Press Insert any time to open Cyanite. To try the Beta UI, or replay this tour, use the GUI tab.", () -> Rect.EMPTY)
         );
     }

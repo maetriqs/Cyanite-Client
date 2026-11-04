@@ -134,6 +134,7 @@ public class BetaGuiScreen extends Screen {
         navs.add(new Nav("donut", "Join & commands", Kind.PAGE, null, new DonutPage(), DonutSmp.NAME));
         navs.add(new Nav("accounts", "Accounts", Kind.PAGE, null, new AccountsPage(), DonutSmp.NAME));
         navs.add(new Nav("area", "Area Miner", Kind.PAGE, null, new AreaMinerPage(), "Tools"));
+        navs.add(new Nav("schematic", "Schematic Builder", Kind.PAGE, null, new SchematicBuilderPage(), "Tools"));
         navs.add(new Nav("macros", "Macros", Kind.PAGE, null, new MacrosPage(), "Tools"));
         nav = navs.stream().filter(n -> n.key.equals(lastNav) && n.kind != Kind.HUD).findFirst().orElse(navs.get(2));
         selected = lastSelected;
@@ -195,7 +196,7 @@ public class BetaGuiScreen extends Screen {
             new Tutorial.Step(0, "Search anything", "Just start typing, wherever you are. It finds modules, what they do, any setting "
                 + "and the pages. Enter switches the top match on or off.", this::searchRect),
             new Tutorial.Step(0, "Get around", "Every category of modules, then the HUD editor, Look & feel, profiles, the Donut SMP "
-                + "server, accounts, Area Miner and macros.", () -> new Rect(wx + 2, cy + 2, SIDE - 4, ch - 4)),
+                + "server, accounts, Area Miner, Schematic Builder and macros.", () -> new Rect(wx + 2, cy + 2, SIDE - 4, ch - 4)),
             new Tutorial.Step(0, "Modules", "Click one to see its settings. Its switch or a right click turns it on, and a dot marks "
                 + "the ones that are. The star keeps it in Favourites.", () -> new Rect(cx + 2, cy + 2, listW - 4, ch - 4)),
             new Tutorial.Step(0, "Settings", "Everything the picked module can do. Click a value to change it, drag the sliders, right "

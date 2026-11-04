@@ -2,6 +2,7 @@ package com.cyanite.client.mixin;
 
 import com.cyanite.client.modules.render.F5Camera;
 import com.cyanite.client.modules.render.Freecam;
+import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import org.spongepowered.asm.mixin.injection.ModifyArg;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import com.cyanite.client.system.Modules;
@@ -29,6 +30,19 @@ public abstract class CameraMixin {
     private boolean cyanite$freecamDetached(boolean detached) {
         Freecam freecam = Modules.get(Freecam.class);
         return detached || freecam != null && freecam.isActive();
+    }
+
+    // F5 Camera's free look: the camera swings round your player instead of turning with it.
+    @ModifyExpressionValue(method = "setup", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/Entity;getViewYRot(F)F"))
+    private float cyanite$freeLookYaw(float yaw) {
+        F5Camera f5 = Modules.get(F5Camera.class);
+        return f5 != null && f5.freeLooking() ? f5.yaw() : yaw;
+    }
+
+    @ModifyExpressionValue(method = "setup", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/Entity;getViewXRot(F)F"))
+    private float cyanite$freeLookPitch(float pitch) {
+        F5Camera f5 = Modules.get(F5Camera.class);
+        return f5 != null && f5.freeLooking() ? f5.pitch() : pitch;
     }
 
     // F5 Camera: how far back third person sits (vanilla's 4 blocks, times your scale).

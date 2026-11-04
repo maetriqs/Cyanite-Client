@@ -3,6 +3,7 @@ package com.cyanite.client.mixin;
 import com.cyanite.client.modules.combat.PopCounter;
 import com.cyanite.client.modules.combat.Velocity;
 import com.cyanite.client.modules.donut.ChunkFinder;
+import com.cyanite.client.modules.donut.HiddenPlayerFinder;
 import com.cyanite.client.modules.misc.AntiVanish;
 import com.cyanite.client.modules.movement.BoatFly;
 import com.cyanite.client.system.ChunkScanner;
@@ -14,13 +15,21 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
 import net.minecraft.network.protocol.game.ClientboundBlockEventPacket;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundDamageEventPacket;
 import net.minecraft.network.protocol.game.ClientboundEntityEventPacket;
+import net.minecraft.network.protocol.game.ClientboundEntityPositionSyncPacket;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.network.protocol.game.ClientboundLevelEventPacket;
+import net.minecraft.network.protocol.game.ClientboundMoveEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundMoveVehiclePacket;
+import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
+import net.minecraft.network.protocol.game.ClientboundRotateHeadPacket;
 import net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
+import net.minecraft.network.protocol.game.ClientboundTakeItemEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
@@ -112,9 +121,72 @@ public class ClientPacketListenerMixin {
     // Chunk Finder: a chunk's block entities, read before the client drops the ones at spots it's been told are rock.
     @Inject(method = "handleLevelChunkWithLight", at = @At("HEAD"))
     private void cyanite$chunkFinderChunk(ClientboundLevelChunkWithLightPacket packet, CallbackInfo ci) {
-        if (!Minecraft.getInstance().isSameThread() || !ChunkFinder.listening()) return;
+        if (!Minecraft.getInstance().isSameThread()) return;
+        HiddenPlayerFinder.onChunk(packet.getX(), packet.getZ());
+        if (!ChunkFinder.listening()) return;
         packet.getChunkData().getBlockEntitiesTagsConsumer(packet.getX(), packet.getZ())
             .accept((pos, type, tag) -> ChunkFinder.onChunkBlockEntity(pos, type));
+    }
+
+    // Hidden Player Finder: whatever ticks past your own simulation distance. Moves, turns and
+    // changes once they're in (TAIL only runs on the game thread); block changes, removals and
+    // pickups before, while what was there is still there (HEAD runs twice: only the game thread's).
+    @Inject(method = "handleMoveEntity", at = @At("TAIL"))
+    private void cyanite$hiddenMove(ClientboundMoveEntityPacket packet, CallbackInfo ci) {
+        if (packet.hasPosition() && (packet.getXa() != 0 || packet.getYa() != 0 || packet.getZa() != 0) || packet.hasRotation()) {
+            Entity entity = packet.getEntity(Minecraft.getInstance().level);
+            if (entity != null) HiddenPlayerFinder.onActive(entity);
+        }
+    }
+
+    @Inject(method = "handleRotateMob", at = @At("TAIL"))
+    private void cyanite$hiddenTurn(ClientboundRotateHeadPacket packet, CallbackInfo ci) {
+        Entity entity = packet.getEntity(Minecraft.getInstance().level);
+        if (entity != null) HiddenPlayerFinder.onActive(entity);
+    }
+
+    @Inject(method = "handleEntityPositionSync", at = @At("HEAD"))
+    private void cyanite$hiddenSync(ClientboundEntityPositionSyncPacket packet, CallbackInfo ci) {
+        if (!Minecraft.getInstance().isSameThread()) return;
+        Entity entity = Minecraft.getInstance().level.getEntity(packet.id());
+        if (entity != null && entity.position().distanceToSqr(packet.values().position()) > 1.0E-4) HiddenPlayerFinder.onActive(entity);
+    }
+
+    @Inject(method = "handleTeleportEntity", at = @At("TAIL"))
+    private void cyanite$hiddenTeleport(ClientboundTeleportEntityPacket packet, CallbackInfo ci) {
+        Entity entity = Minecraft.getInstance().level.getEntity(packet.id());
+        if (entity != null) HiddenPlayerFinder.onActive(entity);
+    }
+
+    @Inject(method = "handleAddEntity", at = @At("TAIL"))
+    private void cyanite$hiddenAdd(ClientboundAddEntityPacket packet, CallbackInfo ci) {
+        Entity entity = Minecraft.getInstance().level.getEntity(packet.getId());
+        if (entity != null) HiddenPlayerFinder.onAdded(entity);
+    }
+
+    @Inject(method = "handleRemoveEntities", at = @At("HEAD"))
+    private void cyanite$hiddenRemove(ClientboundRemoveEntitiesPacket packet, CallbackInfo ci) {
+        if (Minecraft.getInstance().isSameThread()) HiddenPlayerFinder.onRemoving(packet.getEntityIds());
+    }
+
+    @Inject(method = "handleDamageEvent", at = @At("TAIL"))
+    private void cyanite$hiddenDamage(ClientboundDamageEventPacket packet, CallbackInfo ci) {
+        HiddenPlayerFinder.onDamage(packet);
+    }
+
+    @Inject(method = "handleTakeItemEntity", at = @At("HEAD"))
+    private void cyanite$hiddenPickup(ClientboundTakeItemEntityPacket packet, CallbackInfo ci) {
+        if (Minecraft.getInstance().isSameThread()) HiddenPlayerFinder.onTakeItem(packet.getItemId(), packet.getPlayerId());
+    }
+
+    @Inject(method = "handleBlockUpdate", at = @At("HEAD"))
+    private void cyanite$hiddenBlock(ClientboundBlockUpdatePacket packet, CallbackInfo ci) {
+        if (Minecraft.getInstance().isSameThread()) HiddenPlayerFinder.onBlockChanging(packet.getPos(), packet.getBlockState());
+    }
+
+    @Inject(method = "handleChunkBlocksUpdate", at = @At("HEAD"))
+    private void cyanite$hiddenBlocks(ClientboundSectionBlocksUpdatePacket packet, CallbackInfo ci) {
+        if (Minecraft.getInstance().isSameThread()) packet.runUpdates(HiddenPlayerFinder::onBlockChanging);
     }
 
     @Inject(method = "handleBlockEntityData", at = @At("HEAD"))

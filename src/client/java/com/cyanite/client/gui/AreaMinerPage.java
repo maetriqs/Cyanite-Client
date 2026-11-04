@@ -8,60 +8,34 @@ import com.cyanite.client.modules.world.area.AreaSelection;
 import com.cyanite.client.modules.world.area.AreaTarget;
 import com.cyanite.client.modules.world.area.Region;
 import com.cyanite.client.system.Modules;
+import com.cyanite.client.system.setting.Setting;
 import com.mojang.blaze3d.platform.cursor.CursorTypes;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 
 /**
  * The Area Miner tab: what to dig on the left (two corners, or a Litematica placement), the
  * run itself in the middle (progress, Start / Pause / Resume / Stop), and its settings on the right.
  */
-final class AreaMinerPage extends Page {
+final class AreaMinerPage extends ToolPage {
     private static final int AREA_W = 224;
     private static final int RUN_W = 206;
-    private static final int SETTINGS_W = 168;
-    private static final int GAP = 8;
-    private static final int HEADER = 18;
-    private static final int PAD = 6;
     private static final int FIELD = 14;
-    private static final int ROW = 14;
-    private static final int LIST_ROW = 16;
     private static final int LIST_ROWS = 6;
-    private static final int BUTTON_H = 16;
-    private static final float STATUS_TIME = 4;
 
     private final TextField corner1 = new TextField(40, AreaMinerPage::coordChar);
     private final TextField corner2 = new TextField(40, AreaMinerPage::coordChar);
-    private final List<Button> buttons = new ArrayList<>();
-    private final Map<String, Float> hover = new HashMap<>();
-    private SettingsList settings;
-
-    private String note = "";
-    private boolean noteError;
-    private float noteLeft;
     private int listScroll;
-    private int settingsScroll;
-    private int settingsX;
-    private int settingsY;
-    private int settingsH;
-    private int settingsViewH;
-    private boolean draggingSetting;
-
-    private record Button(String key, int x, int y, int w, int h, Runnable left, Runnable right) {
-    }
 
     private static boolean coordChar(int cp) {
         return cp >= '0' && cp <= '9' || cp == '-' || cp == ' ' || cp == ',';
@@ -69,6 +43,11 @@ final class AreaMinerPage extends Page {
 
     private static AreaMiner miner() {
         return Modules.get(AreaMiner.class);
+    }
+
+    @Override
+    protected List<Setting<?>> toolSettings() {
+        return miner().settings();
     }
 
     @Override
@@ -81,9 +60,7 @@ final class AreaMinerPage extends Page {
     @Override
     void render(GuiGraphics g, int mouseX, int mouseY, float dt, float alpha) {
         float a = alpha * entrance();
-        buttons.clear();
-        noteLeft = Math.max(0, noteLeft - dt);
-        if (settings == null) settings = new SettingsList(miner().settings());
+        frame(dt);
 
         syncCorner(corner1, true);
         syncCorner(corner2, false);
@@ -180,7 +157,7 @@ final class AreaMinerPage extends Page {
             String error = miner().previewError();
             Text.draw(g, error == null ? "" : error, x + PAD + 2, rowY + (ROW - Text.CAP) / 2, Theme.fade(Theme.TEXT_FAINT, a));
         }
-        renderNote(g, x, rowY + ROW * 2 + PAD, "Type x y z, or stand or look and click", a);
+        renderNote(g, x, AREA_W, rowY + ROW * 2 + PAD, "Type x y z, or stand or look and click", a);
     }
 
     private void cornerRow(GuiGraphics g, int x, int rowY, String label, TextField field, int dot, boolean first,
@@ -216,7 +193,7 @@ final class AreaMinerPage extends Page {
         for (int i = 0; i < rows && listScroll + i < placements.size(); i++) {
             Litematica.Placement p = placements.get(listScroll + i);
             boolean chosen = p.key().equals(s.placementKey) && (p.origin().equals(s.placementOrigin) || s.placementOrigin == null);
-            placementRow(g, x, top + i * LIST_ROW, p, chosen, mouseX, mouseY, dt, a);
+            placementRow(g, x, AREA_W, top + i * LIST_ROW, p, chosen, mouseX, mouseY, dt, a, () -> choose(p));
         }
         if (placements.size() > rows) {
             int sc = Render2D.scale();
@@ -244,52 +221,8 @@ final class AreaMinerPage extends Page {
             String error = miner().previewError();
             Text.draw(g, error == null ? "" : error, x + PAD + 2, rowY + ROW + (ROW - Text.CAP) / 2, Theme.fade(Theme.TEXT_FAINT, a));
         }
-        renderNote(g, x, rowY + ROW * 3 + PAD, s.shape == AreaSelection.Shape.BLOCKS
+        renderNote(g, x, AREA_W, rowY + ROW * 3 + PAD, s.shape == AreaSelection.Shape.BLOCKS
             ? "Only where the schematic has blocks" : "Everything inside the schematic's boxes", a);
-    }
-
-    private void placementRow(GuiGraphics g, int x, int rowY, Litematica.Placement p, boolean chosen,
-                              int mouseX, int mouseY, float dt, float a) {
-        int s = Render2D.scale();
-        String key = "pl:" + p.key() + p.origin().asLong();
-        boolean over = inside(mouseX, mouseY, x + 3, rowY, AREA_W - 6, LIST_ROW);
-        float h = hover(key, over, dt);
-        if (over) g.requestCursor(CursorTypes.POINTING_HAND);
-
-        Render2D.pixels(g);
-        Render2D.rect(g, (x + 3) * s, rowY * s, (AREA_W - 6) * s, LIST_ROW * s, 2 * s, Theme.alpha(0xFFFFFF, h * 10 * a));
-        if (chosen) {
-            int accent = Theme.accent();
-            int barW = Math.max(2, Math.round(1.5f * s));
-            int barY = (rowY + 4) * s;
-            int barH = (LIST_ROW - 8) * s;
-            Render2D.fadeRight(g, (x + 3) * s, rowY * s, (AREA_W - 6) * s, LIST_ROW * s, Theme.alpha(accent, 50 * a));
-            Render2D.glow(g, (x + 3) * s, barY, barW, barH, barW / 2, 5 * s, Theme.alpha(accent, 160 * Theme.glow() * a));
-            Render2D.rect(g, (x + 3) * s, barY, barW, barH, barW / 2, Theme.fade(accent, a));
-        }
-        Render2D.end(g);
-
-        Region b = p.bounds();
-        String size = b.sizeX() + "×" + b.sizeY() + "×" + b.sizeZ();
-        String turn = turn(p);
-        String right = turn.isEmpty() ? size : turn + "  " + size;
-        int textY = rowY + (LIST_ROW - Text.CAP) / 2;
-        int rightX = x + AREA_W - 10 - Text.width(right);
-        String name = fit(p.name() + (p.enabled() ? "" : " (hidden)"), rightX - 8 - (x + 10));
-        Text.draw(g, name, x + 10, textY, Theme.fade(chosen ? Theme.accentText() : Theme.mix(Theme.TEXT_DIM, Theme.TEXT, h), a));
-        Text.draw(g, right, rightX, textY, Theme.fade(Theme.TEXT_FAINT, a));
-        buttons.add(new Button(key, x + 3, rowY, AREA_W - 6, LIST_ROW, () -> choose(p), null));
-    }
-
-    private static String turn(Litematica.Placement p) {
-        String rotation = switch (p.rotation()) {
-            case CLOCKWISE_90 -> "90°";
-            case CLOCKWISE_180 -> "180°";
-            case COUNTERCLOCKWISE_90 -> "270°";
-            default -> "";
-        };
-        String mirror = p.mirror() == Mirror.NONE ? "" : "mirrored";
-        return (rotation + (rotation.isEmpty() || mirror.isEmpty() ? "" : " ") + mirror).trim();
     }
 
     // ---- The run
@@ -370,69 +303,7 @@ final class AreaMinerPage extends Page {
         return new Rect(x, y, RUN_W, HEADER + body);
     }
 
-    private void progressBar(GuiGraphics g, int x, int y, int w, double progress, float a) {
-        int s = Render2D.scale();
-        int h = 8 * s;
-        int r = h / 2;
-        int filled = (int) Math.round(w * s * Math.max(0, Math.min(1, progress)));
-        int accent = Theme.accent();
-        Render2D.pixels(g);
-        Render2D.rect(g, x * s, y * s, w * s, h, r, Theme.fade(Theme.TRACK, a));
-        if (filled > 0) {
-            Render2D.glow(g, x * s, y * s, Math.max(filled, h), h, r, 5 * s, Theme.alpha(accent, 70 * Theme.glow() * a));
-            Render2D.rect(g, x * s, y * s, Math.max(filled, h), h, r, Theme.fade(accent, a));
-        }
-        Render2D.end(g);
-    }
-
-    private void dot(GuiGraphics g, int cx, int cy, int color, boolean glow, float a) {
-        int s = Render2D.scale();
-        int d = 4 * s;
-        Render2D.pixels(g);
-        if (glow) Render2D.glow(g, cx * s - d / 2, cy * s - d / 2, d, d, d / 2, 5 * s, Theme.alpha(color, 140 * Theme.glow() * a));
-        Render2D.rect(g, cx * s - d / 2, cy * s - d / 2, d, d, d / 2, Theme.fade(color, a));
-        Render2D.end(g);
-    }
-
-    // ---- Settings
-
-    private Rect renderSettings(GuiGraphics g, int x, int y, int mouseX, int mouseY, float dt, float a) {
-        int content = settings.height();
-        int maxView = Math.max(80, height - y - HEADER - PAD * 2 - 12);
-        settingsViewH = Math.min(content, maxView);
-        settingsScroll = Math.max(0, Math.min(settingsScroll, content - settingsViewH));
-        int body = PAD + settingsViewH + PAD;
-        boolean hovered = inside(mouseX, mouseY, x, y, SETTINGS_W, HEADER + body);
-        Panel.draw(g, x, y, SETTINGS_W, HEADER, body, a, hovered ? 0.6f : 0.35f, 0, 1);
-        Text.draw(g, "Settings", x + 8, y + (HEADER - Text.CAP) / 2, Theme.fade(Theme.TEXT, a));
-
-        settingsX = x + 4;
-        settingsY = y + HEADER + PAD;
-        settingsH = settingsViewH;
-        int s = Render2D.scale();
-        boolean overList = inside(mouseX, mouseY, settingsX, settingsY, SETTINGS_W - 8, settingsViewH);
-        g.enableScissor(x, settingsY, x + SETTINGS_W, settingsY + settingsViewH);
-        settings.render(g, settingsX, settingsY - settingsScroll, SETTINGS_W - 8, mouseX, overList || draggingSetting ? mouseY : -10000, dt, a, true);
-        g.disableScissor();
-        if (content > settingsViewH) {
-            int thumbH = Math.max(10, settingsViewH * settingsViewH / content);
-            int thumbY = settingsY + (settingsViewH - thumbH) * settingsScroll / Math.max(1, content - settingsViewH);
-            int w = Math.max(2, s);
-            Render2D.pixels(g);
-            Render2D.rect(g, (x + SETTINGS_W - 2) * s - w, thumbY * s, w, thumbH * s, w / 2, Theme.fade(Theme.TEXT_FAINT, a));
-            Render2D.end(g);
-        }
-        return new Rect(x, y, SETTINGS_W, HEADER + body);
-    }
-
     // ---- Small pieces
-
-    private void row(GuiGraphics g, int x, int w, int y, String label, String value, int valueColor, float a) {
-        int textY = y + (ROW - Text.CAP) / 2;
-        Text.draw(g, label, x + PAD + 2, textY, Theme.fade(Theme.TEXT_DIM, a));
-        String shown = fit(value, w - PAD * 2 - 8 - Text.width(label) - 10);
-        Text.draw(g, shown, x + w - PAD - 2 - Text.width(shown), textY, Theme.fade(valueColor, a));
-    }
 
     private void modeRow(GuiGraphics g, int x, int y, String label, String value, int mouseX, int mouseY, float dt, float a, Runnable action) {
         boolean over = inside(mouseX, mouseY, x + 2, y, AREA_W - 4, ROW);
@@ -448,60 +319,6 @@ final class AreaMinerPage extends Page {
         Text.draw(g, label, x + PAD + 2, textY, Theme.fade(Theme.mix(Theme.TEXT_DIM, Theme.TEXT, h), a));
         Text.draw(g, value, x + AREA_W - PAD - 9 - Text.width(value), textY, Theme.fade(Theme.accentText(), a));
         buttons.add(new Button("mode:" + label, x + 2, y, AREA_W - 4, ROW, action, action));
-    }
-
-    private void renderNote(GuiGraphics g, int x, int y, String idle, float a) {
-        if (noteLeft > 0) {
-            Text.draw(g, fit(note, AREA_W - PAD * 2 - 4), x + PAD + 2, y, Theme.fade(noteError ? Theme.DANGER : Theme.TEXT_DIM, a * Math.min(1, noteLeft / 0.4f)));
-        } else {
-            Text.draw(g, idle, x + PAD + 2, y, Theme.fade(Theme.TEXT_FAINT, a));
-        }
-    }
-
-    private void button(GuiGraphics g, String key, int x, int y, int w, int h, String label, boolean enabled,
-                        int mouseX, int mouseY, float dt, float a, Runnable action) {
-        boolean over = enabled && inside(mouseX, mouseY, x, y, w, h);
-        float hv = hover(key, over, dt);
-        if (over) g.requestCursor(CursorTypes.POINTING_HAND);
-        Widgets.button(g, x, y, w, h, label, hv, enabled, a);
-        if (enabled) buttons.add(new Button(key, x, y, w, h, action, null));
-    }
-
-    private void textButton(GuiGraphics g, String key, String label, int bx, int by, int mouseX, int mouseY,
-                            float dt, float a, int color, int hoverColor, Runnable action) {
-        int w = Text.width(label);
-        boolean over = inside(mouseX, mouseY, bx - 3, by - 3, w + 6, Text.CAP + 6);
-        float h = hover(key, over, dt);
-        if (over) g.requestCursor(CursorTypes.POINTING_HAND);
-        Text.draw(g, label, bx, by, Theme.fade(Theme.mix(color, hoverColor, h), a));
-        buttons.add(new Button(key, bx - 3, by - 3, w + 6, Text.CAP + 6, action, null));
-    }
-
-    private float hover(String key, boolean over, float dt) {
-        float value = Anim.approach(hover.getOrDefault(key, 0f), over ? 1 : 0, dt, 16);
-        hover.put(key, value);
-        return value;
-    }
-
-    private static String fit(String text, int maxWidth) {
-        if (Text.width(text) <= maxWidth) return text;
-        String cut = text;
-        while (!cut.isEmpty() && Text.width(cut + "…") > maxWidth) cut = cut.substring(0, cut.length() - 1);
-        return cut + "…";
-    }
-
-    private static String duration(long millis) {
-        long seconds = millis / 1000;
-        long h = seconds / 3600;
-        long m = seconds / 60 % 60;
-        long s = seconds % 60;
-        return h > 0 ? String.format(Locale.ROOT, "%dh %02dm", h, m) : String.format(Locale.ROOT, "%dm %02ds", m, s);
-    }
-
-    private void setNote(String text, boolean error) {
-        note = text;
-        noteError = error;
-        noteLeft = STATUS_TIME;
     }
 
     // ---- Actions
@@ -609,37 +426,13 @@ final class AreaMinerPage extends Page {
         boolean focused1 = miner().selection().source == AreaSelection.Source.COORDS && corner1.mouseClicked(mouseX, mouseY);
         boolean focused2 = miner().selection().source == AreaSelection.Source.COORDS && corner2.mouseClicked(mouseX, mouseY);
 
-        for (Button b : List.copyOf(buttons)) {
-            if (!inside(mouseX, mouseY, b.x, b.y, b.w, b.h)) continue;
-            Runnable action = button == 1 ? b.right : button == 0 ? b.left : null;
-            if (action != null) action.run();
-            return true;
-        }
-        if (settings != null && inside(mouseX, mouseY, settingsX, settingsY, SETTINGS_W - 8, settingsH)
-            && settings.mouseClicked(mouseX, mouseY, button)) {
-            draggingSetting = settings.isDragging();
-            return true;
-        }
+        if (clickButtonsOrSettings(mouseX, mouseY, button)) return true;
         return focused1 || focused2;
     }
 
     @Override
-    void mouseDragged(double mouseX, double mouseY) {
-        if (settings != null) settings.mouseDragged(mouseX);
-    }
-
-    @Override
-    void mouseReleased(int button) {
-        if (settings != null) settings.mouseReleased();
-        draggingSetting = false;
-    }
-
-    @Override
     boolean mouseScrolled(double mouseX, double mouseY, double amount) {
-        if (inside(mouseX, mouseY, settingsX, settingsY, SETTINGS_W - 8, settingsH)) {
-            settingsScroll = Math.max(0, settingsScroll - (int) Math.signum(amount) * 14);
-            return true;
-        }
+        if (scrollSettings(mouseX, mouseY, amount)) return true;
         int size = Litematica.placements().size();
         listScroll = Math.max(0, Math.min(Math.max(0, size - LIST_ROWS), listScroll - (int) Math.signum(amount)));
         return true;

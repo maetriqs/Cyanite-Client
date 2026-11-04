@@ -8,6 +8,7 @@ import com.cyanite.client.modules.render.EspStyle;
 import com.cyanite.client.render.Projection;
 import com.cyanite.client.render.Render3D;
 import com.cyanite.client.modules.misc.StreamerMode;
+import com.cyanite.client.system.BlockEntityLeaks;
 import com.cyanite.client.system.Category;
 import com.cyanite.client.system.Module;
 import com.cyanite.client.system.Notify;
@@ -17,12 +18,14 @@ import com.cyanite.client.system.setting.SliderSetting;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.SpawnData;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.entity.SpawnerBlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.AABB;
@@ -38,6 +41,8 @@ import java.util.Set;
  * Finds mob spawners in the chunks you have loaded, reads which mob each one spawns (the same
  * data the game uses to draw the little spinning mob), boxes the ones you want and tells you
  * the moment a new one turns up. Read-only: it only looks at chunk data you've already got.
+ * With "Leaked spawners" on it also counts the ones the server named but hid under made-up rock
+ * ({@link BlockEntityLeaks}), labelled "(leaked)".
  */
 public class SpawnerFinder extends Module {
     private static final int SCAN_INTERVAL = 10;
@@ -50,6 +55,8 @@ public class SpawnerFinder extends Module {
     private final BoolSetting blaze = add(new BoolSetting("Blaze", false));
     private final BoolSetting other = add(new BoolSetting("Other mobs", false));
     private final BoolSetting unknown = add(new BoolSetting("Unknown type", false));
+    /** Spawners the server names but hides under made-up rock (see Leak Finder). */
+    private final BoolSetting leaked = add(new BoolSetting("Leaked spawners", true));
     private final ColorSetting color = add(new ColorSetting("Color", 0xE8E8E8));
     private final SliderSetting range = add(new SliderSetting("Range", 256, 16, 512, 16).format(v -> (int) v + "m"));
     private final BoolSetting labels = add(new BoolSetting("Labels", true));
@@ -63,7 +70,15 @@ public class SpawnerFinder extends Module {
     private ClientLevel level;
     private int ticks;
 
-    private record Found(BlockPos pos, String mob, SpawnerBlockEntity entity) {
+    /** {@code entity} is null for a leaked one: the client has no spawner there. */
+    private record Found(BlockPos pos, String mob, SpawnerBlockEntity entity, boolean leaked) {
+        String name() {
+            return mob + " spawner" + (leaked ? " (leaked)" : "");
+        }
+
+        boolean gone() {
+            return entity != null && entity.isRemoved();
+        }
     }
 
     public SpawnerFinder() {
@@ -121,9 +136,20 @@ public class SpawnerFinder extends Module {
                     EntityType<?> type = mobOf(spawner);
                     if (!wanted(type)) continue;
                     String mob = type == null ? "Unknown" : type.getDescription().getString();
-                    out.add(new Found(spawner.getBlockPos(), mob, spawner));
+                    out.add(new Found(spawner.getBlockPos(), mob, spawner, false));
                 }
             }
+        }
+        if (leaked.get()) {
+            BlockEntityLeaks.forEach(f -> {
+                if (!f.hidden() || f.type() != BlockEntityType.MOB_SPAWNER) return;
+                int cx = SectionPos.blockToSectionCoord(f.pos().getX());
+                int cz = SectionPos.blockToSectionCoord(f.pos().getZ());
+                if (Math.max(Math.abs(cx - center.x), Math.abs(cz - center.z)) > radius) return;
+                EntityType<?> type = BlockEntityLeaks.mob(f);
+                if (!wanted(type)) return;
+                out.add(new Found(f.pos(), type == null ? "Unknown" : type.getDescription().getString(), null, true));
+            });
         }
         out.sort(Comparator.comparingDouble(f -> f.pos.distToCenterSqr(mc.player.position())));
         return out;
@@ -150,12 +176,12 @@ public class SpawnerFinder extends Module {
     private void announce(List<Found> fresh) {
         Found nearest = fresh.getFirst();
         String title = fresh.size() == 1
-            ? nearest.mob + " spawner found"
+            ? nearest.name() + " found"
             : fresh.size() + " spawners found";
         Notify.send(title, describe(nearest), toast.get(), sound.get(), flash.get());
         // Every one goes in chat, so none get lost behind the single popup.
         for (int i = 1; i < fresh.size(); i++) {
-            Notify.send(fresh.get(i).mob + " spawner", describe(fresh.get(i)), false, false, false);
+            Notify.send(fresh.get(i).name(), describe(fresh.get(i)), false, false, false);
         }
     }
 
@@ -168,7 +194,7 @@ public class SpawnerFinder extends Module {
     public void onRender3D(Render3D render) {
         double maxSq = range.get() * range.get();
         for (Found spawner : found) {
-            if (spawner.entity.isRemoved()) continue;
+            if (spawner.gone()) continue;
             AABB box = new AABB(spawner.pos);
             if (box.getCenter().distanceToSqr(render.camera()) > maxSq) continue;
             style.draw(render, box, color.get());
@@ -185,7 +211,7 @@ public class SpawnerFinder extends Module {
         // Far ones first, so nearer labels sit on top.
         for (int i = found.size() - 1; i >= 0; i--) {
             Found spawner = found.get(i);
-            if (spawner.entity.isRemoved()) continue;
+            if (spawner.gone()) continue;
             Vec3 top = Vec3.atCenterOf(spawner.pos).add(0, 0.85, 0);
             if (top.distanceToSqr(eye) > maxSq) continue;
             double[] screen = Projection.toScreen(top);
@@ -199,7 +225,7 @@ public class SpawnerFinder extends Module {
     }
 
     private void drawLabel(GuiGraphics g, Found spawner, double distance) {
-        String name = spawner.mob + " spawner";
+        String name = spawner.name();
         String dist = Math.round(distance) + "m";
         String coords = StreamerMode.mask(spawner.pos.getX() + ", " + spawner.pos.getY() + ", " + spawner.pos.getZ());
         int line = Text.CAP + 4;

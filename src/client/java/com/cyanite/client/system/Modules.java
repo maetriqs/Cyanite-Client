@@ -36,6 +36,7 @@ import com.cyanite.client.modules.misc.DiscordPresence;
 import com.cyanite.client.modules.misc.MessageLogger;
 import com.cyanite.client.modules.misc.NameProtect;
 import com.cyanite.client.modules.misc.Pets;
+import com.cyanite.client.modules.movement.AutoTrident;
 import com.cyanite.client.modules.movement.AutoWalk;
 import com.cyanite.client.modules.movement.BoatFly;
 import com.cyanite.client.modules.movement.Flight;
@@ -56,6 +57,7 @@ import com.cyanite.client.modules.player.FastPlace;
 import com.cyanite.client.modules.player.InventoryMove;
 import com.cyanite.client.modules.render.BlockESP;
 import com.cyanite.client.modules.render.Breadcrumbs;
+import com.cyanite.client.modules.render.Lyrics;
 import com.cyanite.client.modules.render.ESP;
 import com.cyanite.client.modules.render.Freecam;
 import com.cyanite.client.modules.render.Zoom;
@@ -139,6 +141,7 @@ public final class Modules {
         register(new Step());
         register(new AutoWalk());
         register(new Jesus());
+        register(new AutoTrident());
         register(new Spider());
         register(new NoSlow());
         register(new SafeWalk());
@@ -157,6 +160,7 @@ public final class Modules {
         register(new Zoom());
         register(new Waypoints());
         register(new Breadcrumbs());
+        register(new Lyrics());
         register(new NoHurtCam());
         register(new NoFog());
 
@@ -200,6 +204,9 @@ public final class Modules {
         // Chunk Finder is parked: its code stays in modules/donut, not registered (so it's off the menu and
         // its packet hooks do nothing) until it's redone.
         register(new com.cyanite.client.modules.donut.SusChunkFinder());
+        register(new com.cyanite.client.modules.donut.HiddenPlayerFinder());
+        register(new com.cyanite.client.modules.donut.ChunkChangeFinder());
+        register(new com.cyanite.client.modules.donut.LeakFinder());
         register(new FakePay());
         register(new ScoreboardSpoof());
         register(new SpawnerFinder());
