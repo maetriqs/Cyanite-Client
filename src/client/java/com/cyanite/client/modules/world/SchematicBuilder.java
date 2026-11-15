@@ -11,12 +11,16 @@ import com.cyanite.client.modules.world.build.Routes;
 import com.cyanite.client.modules.world.build.StandIns;
 import com.cyanite.client.system.setting.ModeSetting;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import com.cyanite.client.render.Render3D;
 import com.cyanite.client.system.Category;
+import com.cyanite.client.system.Disconnects;
 import com.cyanite.client.system.HumanAim;
 import com.cyanite.client.system.Module;
 import com.cyanite.client.system.Modules;
 import com.cyanite.client.system.Notify;
+import com.cyanite.client.system.Rejoin;
+import com.cyanite.client.system.Resume;
 import com.cyanite.client.system.Steer;
 import com.cyanite.client.system.setting.BoolSetting;
 import com.cyanite.client.system.setting.SliderSetting;
@@ -37,6 +41,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.block.BaseFireBlock;
 import net.minecraft.world.level.block.BasePressurePlateBlock;
 import net.minecraft.world.level.block.BaseTorchBlock;
 import net.minecraft.world.level.block.DiodeBlock;
@@ -79,6 +84,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * Schematic Builder: builds the schematic you've placed with Litematica, the way a player would.
@@ -100,14 +106,28 @@ import java.util.Set;
  * there, walking along the top, corner to corner too, crouched where a slip would hurt. Down again
  * is a pillar mined out from under itself. Where to stand and how to get there is worked out as
  * one route, cheapest first, so it never climbs down just to put up another pillar beside the
- * first. The junk blocks come out again once it's all built, the way down last.
+ * first. The junk blocks come out again once it's all built, the way down last. With Use
+ * scaffolding, a climb of two blocks or more goes up as scaffolding instead, under one junk block
+ * to stand on: put up from its foot (into its own feet first, then on top of the column from inside
+ * it) while it climbs it, and dug out from under its feet on the way down (it breaks at a touch),
+ * what it drops coming down with it and picked up at the bottom. A stack's bought off /ah as junk
+ * blocks are. Throwaway blocks to build a floating block against only go in when nothing beside
+ * it that's still to be built would do as well.
+ *
+ * <p>Dropped off the server (Rejoin after disconnect, see {@link Rejoin}): a reset connection or a
+ * restart, it rejoins, and once it's back where it left with the world loaded round it and the
+ * schematic where it was, it carries on. A dead session, a ban or a kick from staff stops it.
  *
  * <p>The blocks it needs are moved into your hotbar as it goes. What you haven't got, it buys off
  * the auction house with /ah first, under a price cap per item and a budget (see
  * {@link AuctionBuyer}): with Layer by layer, only what the layer it's on needs (Buy per layer).
  * When a layer's done, what it bought that the next won't use goes back with /sell, and at the
  * end all it bought that's left (Sell leftovers, see {@link SellMenu}). With that on it buys
- * whole stacks, rounding up (148 is three stacks), and the extra is what goes back. Only what it bought this
+ * whole stacks, rounding up (148 is three stacks), and the extra is what goes back. It never buys
+ * more than fits with a slot to spare (bought into a full inventory, it'd land on the ground, paid
+ * for all the same): a layer too big for your inventory gets a fair share of each block, and the
+ * rest is bought once it's down to its last stack. Short of room, what it bought and won't need on
+ * this layer goes back with /sell right then, not just at the end of it. Only what it bought this
  * time is ever sold, never below what you had of your own, and a stack of junk blocks is kept
  * while there's building left; down to its last few, it buys a stack more (dirt, or whatever junk
  * the build doesn't use). What costs more than the cap (or isn't listed at all) gets a stand-in
@@ -129,7 +149,7 @@ import java.util.Set;
  * the machine off: an observer goes in after what it watches, a piston only with no power by it,
  * and TNT and pulled levers last of all (TNT never where it'd be lit).
  */
-public class SchematicBuilder extends Module {
+public class SchematicBuilder extends Module implements Rejoin.Client {
     private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
     private static final int PATH_BUDGET = 40_000;
     /** Eye height while crouched, which is how it places; and standing, which is how it clicks and soaks. */
@@ -145,6 +165,15 @@ public class SchematicBuilder extends Module {
     private static final double PLAN_SLACK = 0.45;
     private static final double BREAK_SLACK = 0.2;
     /** Throwaway blocks for pillars. */
+    /** Scaffolding to hand for ladders: under this many, a stack more's bought. */
+    private static final int LADDER_LOW = 16;
+    /**
+     * The lowest pillar that goes up as a ladder: a shorter one's quicker jumped up block by block
+     * (the first scaffolding, looking down at your feet, and the climb out onto the top cost more
+     * than climbing saves).
+     */
+    private static final int LADDER_MIN = 4;
+    private static final int LADDER_STACK = 64;
     private static final Set<Item> SCAFFOLD = Set.of(Items.DIRT, Items.COBBLESTONE, Items.COBBLED_DEEPSLATE, Items.NETHERRACK,
         Items.STONE, Items.DEEPSLATE, Items.ANDESITE, Items.DIORITE, Items.GRANITE, Items.TUFF, Items.BLACKSTONE, Items.OAK_PLANKS,
         Items.SPRUCE_PLANKS, Items.BIRCH_PLANKS);
@@ -162,6 +191,11 @@ public class SchematicBuilder extends Module {
     private final BoolSetting buildUp = add(new BoolSetting("Build up", true));
     /** Across gaps on a bridge of junk blocks, crouched at the edge, rather than only walking round. */
     private final BoolSetting bridge = add(new BoolSetting("Bridge", true));
+    /**
+     * Pillars of scaffolding (bought off /ah, a stack at a time) with one junk block on top to
+     * stand on: quicker up, sunk down through in a moment, and taken down in one go from the foot.
+     */
+    private final BoolSetting useScaffolding = add(new BoolSetting("Use scaffolding", false));
     private final BoolSetting buy = add(new BoolSetting("Buy from /ah", true));
     /** Off to match DonutSMP's own "auction buy confirm" setting being off: a click on a listing buys it. */
     private final BoolSetting confirmScreen = add(new BoolSetting("AH confirm screen", false));
@@ -179,6 +213,8 @@ public class SchematicBuilder extends Module {
         List.of("Cobblestone", "Stone", "Cobbled Deepslate", "Dirt", "Netherrack", "Oak Planks", "Whatever you have")));
     private final BoolSetting showStandIns = add(new BoolSetting("Show stand-ins", true));
     private final BoolSetting showPlan = add(new BoolSetting("Show plan", true));
+    /** A dropped connection or a restart doesn't end the build: back on, and on with it from where it left. */
+    private final Resume rejoin = new Resume(this);
 
     /** For tests and other modules: a plan to build instead of Litematica's selection. */
     private static Map<BlockPos, BlockState> given;
@@ -192,11 +228,20 @@ public class SchematicBuilder extends Module {
     private LocalPlayer owner;
     private Map<BlockPos, BlockState> plan = Map.of();
     private String planName = "";
+    /** The Litematica placement being built and where it was put, to tell after a rejoin that it hasn't been moved; null for a given plan. */
+    private String builtKey;
+    private BlockPos builtOrigin;
     private Region bounds;
     private List<BlockPos> pending = new ArrayList<>();
     private int skippedCount;
     /** Goes back round what it gave up on, from the bottom, this many times before stopping. */
     private int sweeps;
+    /**
+     * Built as far as it goes and its junk out as far as it'll come: what's left in is in for
+     * good, so one last round of what waited on junk beside it coming out ({@link #waitedOnJunk}).
+     */
+    private boolean lastGo;
+    private final Set<BlockPos> waitedOnJunk = new HashSet<>();
     /** How to place each block at each spot (the planned one, or a stand-in), worked out once. */
     private final Map<BlockPos, Map<BlockState, List<Placing.Way>>> ways = new HashMap<>();
     /** Stand-ins put in this time, and what they're in for. */
@@ -209,6 +254,14 @@ public class SchematicBuilder extends Module {
     private final Set<Item> buyTried = new HashSet<>();
     /** Tried and none to be had: not tried again on the next layer. */
     private final Set<Item> cantBuy = new HashSet<>();
+    /** Short of something there's no room to buy all of; null if not. Set by {@link #shortage}. */
+    private Item cramped;
+    /** When it may next /sell to make room. */
+    private long roomSellAt;
+    /** Stopped buying these for want of room, and how many slots were free then: tried again once more are. */
+    private final Map<Item, Integer> noRoom = new HashMap<>();
+    /** Told you there's no room for these. */
+    private final Set<Item> toldFull = new HashSet<>();
     /** What it's bought this time, and sold back. */
     private final Map<Item, Integer> bought = new HashMap<>();
     private final Map<Item, Integer> soldBack = new HashMap<>();
@@ -224,18 +277,45 @@ public class SchematicBuilder extends Module {
     private int buyingWant;
     private final LinkedHashSet<BlockPos> scaffold = new LinkedHashSet<>();
     /**
+     * The scaffolding among them (Use scaffolding): ladders, a column under each pillar's top
+     * block. Never stood on (crouched there, you'd sink); sunk down through, and taken down from
+     * the foot, everything over it coming down with it.
+     */
+    private final Set<BlockPos> ladder = new HashSet<>();
+    /** The pillar going up is a ladder (its scaffolding goes in first, then it climbs it), and when it last clicked. */
+    private boolean pillarLadder;
+    private long ladderClickAt;
+    /** Picking up what a ladder taken down dropped, till then. */
+    private long dropsUntil;
+    /**
      * Throwaway blocks put in to build a floating block against (nothing beside it to place it
      * on), taken out again once the layer they were for is done; and ones it couldn't get to.
      */
     private final LinkedHashSet<BlockPos> props = new LinkedHashSet<>();
+    /**
+     * What each junk block or prop still in was put in for, until it's stood on or built against:
+     * the ones that go again untouched were wasted, and the debug log counts them by reason.
+     */
+    private final Map<BlockPos, String> junkWhy = new HashMap<>();
+    private final Map<String, Integer> junkWasted = new TreeMap<>();
+    private final Map<BlockPos, String> propWhy = new HashMap<>();
+    private String pillarWhy = "pillar";
+    private int junkPut;
     private final Set<BlockPos> stuckProps = new HashSet<>();
+    /** Junk blocks and props it went to break and couldn't, and how often: twice and they're left for now. */
+    private final Map<BlockPos, Integer> breakFails = new HashMap<>();
     /** Why each junk block or prop being left in is left: out of reach, holding something up, or redstone it'd set off. */
     private final Map<BlockPos, String> leftWhy = new HashMap<>();
     private static final String OUT_OF_REACH = "out of reach";
     private static final String HOLDS_UP = "holding something up";
     private static final String REDSTONE = "taking it out would set off the redstone";
-    /** Clearing up has had its fresh look round from up top; and it's just come down the pillar it left by. */
+    /**
+     * Clearing up has had its fresh look round from up top (and since the last of it went in: it
+     * may start before, round what it gave up on, from somewhere it can't see much); and it's just
+     * come down the pillar it left by.
+     */
     private boolean lookedAgain;
+    private boolean lookedBuilt;
     private boolean cameDown;
     private boolean clearingProps;
     private int placedCount;
@@ -250,9 +330,10 @@ public class SchematicBuilder extends Module {
     /**
      * PLACE a block, BREAK one in the way, PROP a floating one with a throwaway block; POUR water
      * or lava from a bucket, SOAK a block with a bucket of water, CLICK a block to set it, FILL
-     * empty buckets at a pool; DOWN: walk onto the top of a pillar it put up and mine it down.
+     * empty buckets at a pool; DOWN: walk onto the top of a pillar it put up and mine it down;
+     * SCOOP up the water it's standing in, shut in at the bottom of a hole, to climb out.
      */
-    private enum Kind { PLACE, BREAK, PROP, POUR, SOAK, CLICK, FILL, DOWN }
+    private enum Kind { PLACE, BREAK, PROP, POUR, SOAK, CLICK, FILL, DOWN, SCOOP }
 
     /** Water that fills itself back up when a bucket's taken, found when it's wanted; and pools that couldn't be got to. */
     private BlockPos pool;
@@ -282,6 +363,14 @@ public class SchematicBuilder extends Module {
     /** Pillar blocks placed so far, and when the last went in (to notice the server taking it back). */
     private int pillarPlaced;
     private long pillarPlacedAt;
+    /**
+     * Climbing up out of somewhere it can't walk back into, for good, clearing up: each block of
+     * the pillar under the one it stands on comes out as it goes (leaning out over the edge to see
+     * its side), so only the top one's left, for taking out from what it climbs out onto. And
+     * which way it leans for the one it's at now.
+     */
+    private boolean pillarClear;
+    private Direction pillarLean;
     /** A pillar put up or mined down on the way somewhere: on along the route after. */
     private boolean resumeRoute;
     /** How low a pillar's mined on a route (feet height) and how many blocks; MIN_VALUE: all the way down. */
@@ -292,6 +381,8 @@ public class SchematicBuilder extends Module {
     /** When it got to the end of the route, and began settling onto the middle of the spot. */
     private long arrivedAt;
     private boolean aimed;
+    /** The block it's mining this tick, its tool in hand; null if none. Attack is held on it through the game's own path (see {@link #shouldAttack}). */
+    private BlockPos digAt;
     private Input steering = Input.EMPTY;
     private boolean lookingAhead;
     private long lastMoveAt;
@@ -328,7 +419,7 @@ public class SchematicBuilder extends Module {
         showStandIns.onChange(() -> StandIns.setShown(showStandIns.get()));
     }
 
-    private static String dollars(double v) {
+    static String dollars(double v) {
         if (v >= 1e9) return String.format(Locale.ROOT, "$%sB", trim(v / 1e9));
         if (v >= 1e6) return String.format(Locale.ROOT, "$%sM", trim(v / 1e6));
         if (v >= 1e4) return String.format(Locale.ROOT, "$%sK", trim(v / 1e3));
@@ -394,10 +485,21 @@ public class SchematicBuilder extends Module {
         return report;
     }
 
+    /**
+     * Whether to hold attack, the way a player holds left click to mine: the crosshair's on the
+     * block it's mining. The game's own held attack does the mining (MinecraftMixin), as for Auto
+     * Mine; mined from here instead, the game let go of it every tick and it started over.
+     */
+    public boolean shouldAttack() {
+        return isEnabled() && digAt != null && mc.screen == null && mc.hitResult instanceof BlockHitResult hit
+            && hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(digAt);
+    }
+
     /** What it's doing right now, in a few words. */
     public String status() {
         if (!isEnabled()) return "";
         if (paused) return phase == Phase.BUY || phase == Phase.SELL ? "Pausing once this is done" : "Paused";
+        if (Rejoin.waiting(this)) return "Getting back on the server";
         Job j = job;
         BlockState want = j == null ? null : plan.get(j.target());
         return switch (phase) {
@@ -408,13 +510,14 @@ public class SchematicBuilder extends Module {
                 : j.kind() == Kind.BREAK && want == null ? "Walking over to take out a throwaway block" : "Walking over";
             case PLACE -> j != null && j.kind() == Kind.PROP ? "Propping up a floating block" : "Placing " + name(want);
             case BREAK -> j == null ? "" : want == null ? "Taking out a throwaway block" : "Breaking " + name(mc.level.getBlockState(j.target())) + " in the way";
-            case PILLAR -> "Pillaring up";
+            case PILLAR -> pillarLadder ? "Putting up scaffolding" : "Pillaring up";
             case BRIDGE -> "Bridging across";
             case DESCEND -> "Coming back down";
             case USE -> j == null ? "" : switch (j.kind()) {
                 case POUR -> want != null && want.getFluidState().is(net.minecraft.tags.FluidTags.LAVA) ? "Pouring lava" : "Pouring water";
                 case SOAK -> "Waterlogging " + name(want);
                 case CLICK -> "Setting " + name(want);
+                case SCOOP -> "Scooping up the water it's stuck in";
                 default -> "Filling buckets with water";
             };
             default -> pending.isEmpty() ? "Finishing up" : "Working out what's next";
@@ -555,7 +658,16 @@ public class SchematicBuilder extends Module {
 
     /** How the builder wants the player to move this tick, or null when it isn't driving. */
     public Input steering() {
-        return isEnabled() && owner != null && owner == mc.player ? steering : null;
+        if (!isEnabled() || owner == null || owner != mc.player) return null;
+        // Never crouched on top of scaffolding, which you'd sink through; but going down a ladder.
+        Input s = steering;
+        if (s.shift() && phase != Phase.DESCEND && onScaffolding(mc.player)) s = new Input(s.forward(), s.backward(), s.left(), s.right(), s.jump(), false, s.sprint());
+        return s;
+    }
+
+    /** Standing on top of scaffolding (anyone's). */
+    private boolean onScaffolding(LocalPlayer player) {
+        return mc.level.getBlockState(BlockPos.containing(player.getX(), player.getY() - 0.05, player.getZ())).is(Blocks.SCAFFOLDING);
     }
 
     @Override
@@ -579,11 +691,18 @@ public class SchematicBuilder extends Module {
         passed.clear();
         tries.clear();
         sweeps = 0;
+        lastGo = false;
+        waitedOnJunk.clear();
+        lastHealth = 0;
         buyTried.clear();
         cantBuy.clear();
         bought.clear();
         soldBack.clear();
         own.clear();
+        noRoom.clear();
+        toldFull.clear();
+        cramped = null;
+        roomSellAt = 0;
         unsellable.clear();
         soldAtEnd = false;
         earned = 0;
@@ -592,10 +711,20 @@ public class SchematicBuilder extends Module {
         badPools.clear();
         layer = Integer.MIN_VALUE;
         scaffold.clear();
+        ladder.clear();
+        pillarLadder = false;
+        dropsUntil = 0;
+        ladderDug = false;
         props.clear();
+        junkWhy.clear();
+        junkWasted.clear();
+        propWhy.clear();
+        junkPut = 0;
         stuckProps.clear();
+        breakFails.clear();
         leftWhy.clear();
         lookedAgain = false;
+        lookedBuilt = false;
         cameDown = false;
         clearBehind = false;
         resumeWalk = null;
@@ -604,12 +733,14 @@ public class SchematicBuilder extends Module {
         clearingProps = false;
         cleaning = false;
         cleanupBlocks = 0;
+        junkAtStart.clear();
         cleared.clear();
         path = null;
         moves = null;
         resumeRoute = false;
         digTo = Integer.MIN_VALUE;
         home = owner.blockPosition();
+        rejoin.clear();
         placedCount = 0;
         brokenCount = 0;
         spent = 0;
@@ -646,6 +777,8 @@ public class SchematicBuilder extends Module {
     private boolean loadPlan() {
         Map<BlockPos, BlockState> states = null;
         String name = "";
+        builtKey = null;
+        builtOrigin = null;
         if (given != null) {
             states = given;
             name = givenName;
@@ -657,6 +790,8 @@ public class SchematicBuilder extends Module {
             states = Litematica.states(chosen.key(), chosen.origin(), 400_000);
             name = chosen.name();
             if (states == null) return cantStart("Couldn't read " + chosen.name() + " (too big?)");
+            builtKey = chosen.key();
+            builtOrigin = chosen.origin();
         }
         if (states.isEmpty()) return cantStart("That schematic has no blocks in it");
         plan = new LinkedHashMap<>(states);
@@ -692,11 +827,19 @@ public class SchematicBuilder extends Module {
 
     @Override
     public void onTick() {
+        // Set again below by whatever's mining this tick.
+        digAt = null;
         LocalPlayer player = mc.player;
+        if (player != owner && Rejoin.waiting(this)) {
+            rejoined(player);
+            return;
+        }
         if (player != owner || player.isDeadOrDying()) {
             stop("You died or changed worlds");
             return;
         }
+        rejoin.saw(player);
+        hurt(player);
         if (mc.isPaused()) {
             steering = Input.EMPTY;
             return;
@@ -716,6 +859,14 @@ public class SchematicBuilder extends Module {
             steering = Input.EMPTY;
             return;
         }
+        stoodOnJunk(player);
+        // Fire where you stand (lit by lava near it, or spread from a fire close by): off it at
+        // once, not after the job in hand. Where it goes next it can't be, standing in fire.
+        if ((phase == Phase.PLACE || phase == Phase.BREAK || phase == Phase.USE)
+            && (burning(player.blockPosition()) || burning(player.blockPosition().above()))) {
+            LOGGER.debug("Schematic Builder: fire where it stands at {}, off it ({})", player.blockPosition(), job);
+            go(Phase.IDLE);
+        }
         if (--scanIn <= 0) scan();
         switch (phase) {
             case IDLE -> decide(player, now);
@@ -731,6 +882,21 @@ public class SchematicBuilder extends Module {
         }
     }
 
+    /** Health last tick, and how far it had fallen by then: for the debug log when it's hurt. */
+    private float lastHealth;
+    private double lastFall;
+
+    /** Says in the debug log when you're hurt, and how: a fall, a burn, or neither. */
+    private void hurt(LocalPlayer player) {
+        float health = player.getHealth();
+        if (health < lastHealth) {
+            LOGGER.debug("Schematic Builder: hurt {} at {} ({}{}{}, fell {} blocks), job {}", lastHealth - health, player.position(), phase,
+                player.isInLava() ? ", in lava" : "", player.isOnFire() ? ", on fire" : "", String.format(Locale.ROOT, "%.1f", lastFall), job);
+        }
+        lastHealth = health;
+        lastFall = player.fallDistance;
+    }
+
     /**
      * What's still to do: every planned spot that isn't right yet, lowest first, then nearest. TNT
      * and levers to pull wait off the list until everything else is done (or given up on for good).
@@ -739,6 +905,8 @@ public class SchematicBuilder extends Module {
         scanIn = SCAN_EVERY;
         // Junk blocks mined out (or never taken by the server) are gone from the list too.
         scaffold.removeIf(p -> mc.level.getBlockState(p).canBeReplaced());
+        ladder.removeIf(p -> !mc.level.getBlockState(p).is(Blocks.SCAFFOLDING));
+        goneJunk(false);
         List<BlockPos> left = new ArrayList<>();
         List<BlockPos> last = new ArrayList<>();
         for (Map.Entry<BlockPos, BlockState> e : plan.entrySet()) {
@@ -845,6 +1013,7 @@ public class SchematicBuilder extends Module {
         steering = Input.EMPTY;
         if (now < nextActAt || !player.onGround()) return;
         if (pending.isEmpty()) {
+            lookRound(player);
             if (takeOutProp(player, now)) return;
             if (takeOutScaffold(player, now)) return;
             wrapUp();
@@ -856,6 +1025,7 @@ public class SchematicBuilder extends Module {
         if (layerDone) {
             // A new layer: what wasn't to be had gets another go only if some turned up last time.
             buyTried.retainAll(cantBuy);
+            noRoom.clear();
             clearingProps = true;
             if (sell(false)) return;
         }
@@ -867,6 +1037,15 @@ public class SchematicBuilder extends Module {
         // What you've not got: bought first, the way you'd fetch your materials before starting.
         if (buy.get()) {
             Map.Entry<Item, Integer> short_ = shortage(player);
+            // No room for all it's short of: what it bought that this layer doesn't want goes back first.
+            if (cramped != null && now >= roomSellAt) {
+                roomSellAt = now + 15_000;
+                if (sell(false)) return;
+            }
+            if (short_ == null && waitingForRoom() && toldFull.add(cramped)) {
+                Notify.send("Schematic Builder", "No room to buy " + AuctionBuyer.name(cramped)
+                    + ": your inventory's full. Make some room and it'll buy them", false, false, false);
+            }
             if (short_ != null) {
                 own.putIfAbsent(short_.getKey(), count(short_.getKey()));
                 // A bucket of lava or water bought leaves an empty one to sell back: the empties you had are yours.
@@ -933,21 +1112,45 @@ public class SchematicBuilder extends Module {
         // it's being shut in that's in the way, not the spots.
         BlockPos feet = player.blockPosition();
         if (routes.order().size() <= 6) {
+            // Standing in water at the bottom of the hole: a jump there's only a swim, never high
+            // enough to put a block under you. The water's scooped up first (it goes back in
+            // later, a spot of the build like any other), then it's a hole to pillar out of.
+            if (player.getFluidHeight(FluidTags.WATER) > player.getFluidJumpThreshold()) {
+                if (isStillWater(feet) && count(Items.BUCKET) > 0) {
+                    LOGGER.debug("Schematic Builder: shut in at {} standing in water, scooping it up", feet);
+                    begin(new Job(Kind.SCOOP, feet.immutable(), null, feet.immutable(), 0));
+                } else {
+                    stop("shut in standing in water, with no way to climb out (no empty bucket to scoop it up with)");
+                }
+                return;
+            }
             if (scaffoldSlot(player, false) >= 0 && Paths.passable(mc.level, feet.above(2))) {
                 LOGGER.debug("Schematic Builder: walled in at {}, climbing out", feet);
                 job = new Job(Kind.PLACE, feet.immutable(), null, feet.immutable(), 0);
                 // Not mined straight back out from under it (it's in a spot of the build): it's
                 // the way out, till it's walked off it.
                 passed.put(feet.immutable(), now + 30_000);
+                pillarWhy = "pillar, walled in";
                 startPillar(feet, 1, false);
                 return;
             }
             BlockPos lid = ownBlockRound(feet);
             if (lid != null) {
                 LOGGER.debug("Schematic Builder: shut in at {}, taking out {}", feet, lid);
+                // Not put straight back: a prop over its head, put in from the bottom of a hole to
+                // turn a block it then couldn't see, went in and out for 40 minutes. With it left
+                // alone, it climbs out instead.
+                pass(lid, 60_000);
                 begin(new Job(Kind.BREAK, lid, null, feet.immutable(), 0));
                 return;
             }
+        }
+        // Waiting on room to buy what's wanted: nothing's set aside (three times and it'd be left
+        // empty), it waits till there's room.
+        if (waitingForRoom()) {
+            nextActAt = now + 1000;
+            go(Phase.IDLE);
+            return;
         }
         // Nothing doable among the nearest few: set them aside a while and look further on (in a
         // moment: working out every route again each tick would lag a big build).
@@ -970,7 +1173,17 @@ public class SchematicBuilder extends Module {
                 layer = Integer.MIN_VALUE;
             } else {
                 // As far as it goes: its throwaway and junk blocks come out all the same.
+                lookRound(player);
                 if (takeOutProp(player, now) || takeOutScaffold(player, now)) return;
+                // What's still in is in for good: once more round what was waiting on it to come out.
+                if (!lastGo && pending.stream().anyMatch(waitedOnJunk::contains)) {
+                    lastGo = true;
+                    LOGGER.debug("Schematic Builder: junk left in for good ({}), once more round what waited on it", leftWhy.keySet());
+                    tries.clear();
+                    passed.clear();
+                    layer = Integer.MIN_VALUE;
+                    return;
+                }
                 wrapUp();
             }
             return;
@@ -1003,8 +1216,9 @@ public class SchematicBuilder extends Module {
 
     /** The lowest, nearest thing that can be done from right where you stand. */
     private Job fromHere(LocalPlayer player) {
-        // Somewhere it shouldn't stand (in the layer's way, say): off somewhere better first.
-        if (!rules.mayStand(player.blockPosition())) return null;
+        // Somewhere it shouldn't stand (in the layer's way, say, or where fire could start): off
+        // somewhere better first.
+        if (!rules.mayStand(player.blockPosition()) || catchesFire(player.blockPosition())) return null;
         Vec3 eye = player.position().add(0, EYE, 0);
         int lowest = pending.getFirst().getY();
         Job best = null;
@@ -1034,6 +1248,11 @@ public class SchematicBuilder extends Module {
     private static final int COVER_CAP = 12;
     /** Standing in a spot of the layer still to do: in its way till it moves on. */
     private static final int IN_THE_WAY = 40;
+    /**
+     * Standing where fire could start: only if nowhere ten steps nearer will do, and only for the
+     * one job (it doesn't stay on to do what else is in reach from there).
+     */
+    private static final int FIRE_RISK = 100;
     /** Placing from somewhere it's only just in sight: a step from where it stops and it mightn't be. */
     private static final int JUST_IN_SIGHT = 30;
 
@@ -1042,6 +1261,11 @@ public class SchematicBuilder extends Module {
      * build to stand on (bridging, pillaring) as well as walking.
      */
     private Routes routes(LocalPlayer player, boolean build) {
+        return routes(player, player.blockPosition(), build, rules, Set.of());
+    }
+
+    /** As {@link #routes(LocalPlayer, boolean)}, from {@code feet}, by {@code with}, as if the blocks {@code gone} were out. */
+    private Routes routes(LocalPlayer player, BlockPos feet, boolean build, Routes.Rules with, Set<BlockPos> gone) {
         Region area = bounds.grow(8, 6);
         if (pool != null) area = area.union(Region.of(pool, pool).grow(5, 4));
         boolean bridges = build && bridge.get();
@@ -1051,7 +1275,42 @@ public class SchematicBuilder extends Module {
         Region building = (bridges || pillars) && scaffoldSlot(player, false) >= 0
             ? new Region(bounds.minX() - 2, bounds.minY() - 1, bounds.minZ() - 2, bounds.maxX() + 2, top, bounds.maxZ() + 2)
             : null;
-        return Routes.search(mc.level, player.blockPosition(), area, building, bridges, pillars, rules, PATH_BUDGET);
+        return Routes.search(mc.level, feet, area, building, bridges, pillars, with, PATH_BUDGET, gone);
+    }
+
+    /** {@link #rules}, but with {@code fill} saying where a junk block may go. */
+    private Routes.Rules filling(java.util.function.Predicate<BlockPos> fill) {
+        return new Routes.Rules() {
+            @Override
+            public boolean mayStand(BlockPos feet) {
+                return rules.mayStand(feet);
+            }
+
+            @Override
+            public boolean mayFill(BlockPos cell) {
+                return fill.test(cell);
+            }
+
+            @Override
+            public boolean mayDig(BlockPos cell) {
+                return rules.mayDig(cell);
+            }
+
+            @Override
+            public boolean mayStep(BlockPos from, BlockPos to) {
+                return rules.mayStep(from, to);
+            }
+
+            @Override
+            public int fillCost(BlockPos cell) {
+                return rules.fillCost(cell);
+            }
+
+            @Override
+            public boolean ladder(BlockPos cell) {
+                return rules.ladder(cell);
+            }
+        };
     }
 
     /**
@@ -1105,8 +1364,10 @@ public class SchematicBuilder extends Module {
                 double dz = centres[i * 3 + 2] - ez;
                 if (dx * dx + dy * dy + dz * dz <= near) inReach[count++] = i;
             }
-            if (count == 0) continue;
-            double base = cost - Math.min(count, COVER_CAP) * COVER_BONUS + (stillToDo(stand) ? IN_THE_WAY : 0);
+            // Never from in a fire (where you stand now is looked at, whatever the rules for routes).
+            if (count == 0 || burning(stand) || burning(stand.above())) continue;
+            double base = cost - Math.min(count, COVER_CAP) * COVER_BONUS + (stillToDo(stand) ? IN_THE_WAY : 0)
+                + (catchesFire(stand) ? FIRE_RISK : 0);
             Vec3 eye = new Vec3(ex, ey, ez);
             for (int k = 0; k < count; k++) {
                 BlockPos spot = spots.get(inReach[k]);
@@ -1157,8 +1418,22 @@ public class SchematicBuilder extends Module {
             // the blocks round it were in, down a hole two deep with no way out. Feet are all
             // right: what goes in round them only comes up to your knees, and you step up onto it.
             if (stillToDo(feet.above())) return false;
+            // Never in the build's own water, poured or still to pour: it goes in from beside, and
+            // at the bottom of a hole (as a farm's water often is), once the blocks round it are in
+            // there's no getting out, as there's no jumping or pillaring up out of water.
+            BlockState planned = plan.get(feet);
+            if (planned != null && Placing.fluid(planned) && planned.getFluidState().is(FluidTags.WATER)) return false;
+            // Never on top of a ladder: crouched there to place, you'd sink.
+            if (isLadder(feet.below())) return false;
+            // Never in fire.
+            if (burning(feet) || burning(feet.above())) return false;
             // Never in tripwire or on a pressure plate, which would set the machine off.
             return !trigger(feet) && !trigger(feet.above());
+        }
+
+        @Override
+        public boolean ladder(BlockPos cell) {
+            return isLadder(cell);
         }
 
         /**
@@ -1270,6 +1545,8 @@ public class SchematicBuilder extends Module {
         // Never into the space you stand in.
         AABB body = new AABB(stand.getX() + 0.2, stand.getY(), stand.getZ() + 0.2, stand.getX() + 0.8, stand.getY() + 1.8, stand.getZ() + 0.8);
         if (body.intersects(new AABB(pos)) && !placing.getCollisionShape(mc.level, pos).isEmpty()) return null;
+        // Nothing that burns beside where you stand, if lava's near enough to light the air you're in.
+        if (placing.ignitedByLava() && (pos.distManhattan(stand) == 1 && firesReach(stand) || pos.distManhattan(stand.above()) == 1 && firesReach(stand.above()))) return null;
         List<Placing.Way> all = waysFor(pos, placing, item);
         Placing.Way seen = null;
         for (Placing.Way way : all) {
@@ -1291,9 +1568,12 @@ public class SchematicBuilder extends Module {
         // Floating, with nothing beside it to place it against: a throwaway block first, to build
         // it on. Only for blocks that stand on their own once it's taken out again (a fence gate
         // or glass, say, but not a torch or redstone).
-        if (all.isEmpty() && standsAlone(placing) && !hasSupport(pos)) {
+        if (all.isEmpty() && standsAlone(placing) && !hasSupport(pos) && !comingBeside(pos)) {
             BlockPos cell = propCell(pos);
-            if (cell != null) return propAt(cell, stand, eye, reachLimit);
+            if (cell != null) {
+                propWhy.put(cell, "prop under a floating block");
+                return propAt(cell, stand, eye, reachLimit);
+            }
         }
         // Nothing there to place it against that comes out right from here: a throwaway block
         // beside it first, where a look from here at it would, for a block turned by which way
@@ -1421,13 +1701,6 @@ public class SchematicBuilder extends Module {
             if (cleaning) cleared.add(p);
             return true;
         });
-        // A fresh look round once the building's done (it was out of reach from where it was
-        // building), and again from the ground once it's come down.
-        if (!lookedAgain || cameDown) {
-            lookAgain(!lookedAgain);
-            lookedAgain = true;
-            cameDown = false;
-        }
         List<BlockPos> left = new ArrayList<>();
         boolean setAside = false;
         for (BlockPos p : scaffold) {
@@ -1441,20 +1714,26 @@ public class SchematicBuilder extends Module {
         // Getting at them may take a bridge or a stair of its own (which comes out in turn), but
         // only so many, so it can't go on putting blocks in to take blocks out.
         cleaning = true;
-        Routes routes = routes(player, cleanupBlocks < CLEANUP_BLOCKS);
+        Routes routes = routes(player, mayBuildClearing());
         List<BlockPos> exit = exitPillar(routes);
         List<BlockPos> first = new ArrayList<>(left);
         first.removeAll(exit);
         if (!exit.isEmpty()) {
-            // The way onto it stays till it's been used.
+            // The way onto it stays till it's been used: unless it's up out of somewhere on a
+            // pillar of its own anyway (the bottom of a shaft in the build). Then the junk blocks
+            // it'd climb over come out first, and it climbs out on a pillar of its own that comes
+            // out under it as it goes: a stair left down there, nothing could get at again.
             List<BlockPos> way = routes.pathTo(exit.getFirst().above());
-            if (way != null) for (BlockPos node : way) first.remove(node.below());
+            if (way != null && !routes.moves(way).contains(Routes.Move.PILLAR)) for (BlockPos node : way) first.remove(node.below());
         }
         // A pillar comes out from the top down: taken from the foot first, the rest of it's left
         // hanging out of reach.
-        first.removeIf(b -> scaffold.contains(b.above()) && !stuckProps.contains(b.above()));
+        // A ladder with its top block out comes down from anywhere along it, everything over that
+        // with it: the lowest it can get at first.
+        first.removeIf(b -> scaffold.contains(b.above()) && !stuckProps.contains(b.above()) && !(isLadder(b) && bareLadder(b)));
         if (!first.isEmpty()) {
-            first.sort(Comparator.comparingInt((BlockPos b) -> -b.getY()).thenComparingInt(this::anchors).thenComparingInt(this::scaffoldBeside));
+            first.sort(Comparator.comparingInt((BlockPos b) -> -ladderTop(b).getY()).thenComparingInt(b -> isLadder(b) ? b.getY() : 0)
+                .thenComparingInt(this::anchors).thenComparingInt(this::scaffoldBeside));
             if (takeOut(player, now, first, routes, true, exit.isEmpty() ? null : exit.getFirst())) return true;
         }
         // What's set aside is its way to others still in: back to it in a moment, once they're out.
@@ -1470,12 +1749,33 @@ public class SchematicBuilder extends Module {
                 startDescend();
                 return true;
             }
-            if (follow(new Job(Kind.DOWN, top, null, top.above(), 0), routes, now)) return true;
+            if (follow(new Job(Kind.DOWN, top, null, top.above(), 0), routes, now)) {
+                LOGGER.debug("Schematic Builder: coming down by the pillar at {} ({} high)", top, exit.size());
+                return true;
+            }
             for (BlockPos b : exit) leave(b, OUT_OF_REACH);
             return false;
         }
         // No pillar to come down by, and junk left it can't get at from up here: down a way of its own.
         return leftWhy.containsValue(OUT_OF_REACH) && goDown(player, now, routes);
+    }
+
+    /**
+     * A fresh look round at what it left in, before clearing up: once the building's done (it was
+     * out of reach from where it was building), again once the last of it's in if it started
+     * before (round what it gave up on, from wherever it was then, with no blocks of its own to
+     * get there), and again from the ground once it's come down.
+     */
+    private void lookRound(LocalPlayer player) {
+        boolean fresh = !lookedAgain || pending.isEmpty() && !lookedBuilt;
+        if (!fresh && !cameDown) return;
+        if (fresh) junkAtStart.addAll(scaffold);
+        LOGGER.debug("Schematic Builder: clearing up {} junk blocks and {} props from {}{}: {}", scaffold.size(), props.size(), player.blockPosition(),
+            fresh ? lookedAgain ? ", all built now" : "" : ", come down", scaffold);
+        lookAgain(fresh);
+        lookedAgain = true;
+        lookedBuilt |= pending.isEmpty();
+        cameDown = false;
     }
 
     /** Most junk blocks looked at each time for whether taking them out cuts it off from the rest: two route searches each. */
@@ -1501,6 +1801,44 @@ public class SchematicBuilder extends Module {
             if (b.distChessboard(j.target()) <= STRAND_NEAR && !breakableFrom(after, b, j.target()) && breakableFrom(before, b, null)) return false;
         }
         return true;
+    }
+
+    /**
+     * Whether, with {@code j}'s junk block out, there's a way from where {@code j} stands back down
+     * to the ground (where you can walk off to where it started), putting junk blocks in where it
+     * still may: so it never takes out its last way out of somewhere. Along the top of a shaft in
+     * the build, bridging on over it and taking out the block behind it each time, it ended up on
+     * the last one, in a corner, with nowhere round it left that it might put one back. And with
+     * the junk blocks it'll have on it by then, going over by {@code routes}: it once spent its
+     * last ones getting somewhere to take one out from. Only while there's a way out from where it
+     * is now: with none, there's none to keep.
+     */
+    private boolean wayOutAfter(LocalPlayer player, Job j, Routes routes) {
+        Region area = bounds.grow(8, 6);
+        Set<BlockPos> gone = Set.of(j.target());
+        Routes fromHome = Routes.search(mc.level, home, area, null, false, false, rules, PATH_BUDGET, gone);
+        if (fromHome.distance(j.stand()) >= 0) return true;
+        List<BlockPos> there = routes.pathTo(j.stand());
+        int left = scaffoldCount() - (there == null ? 0 : Routes.blocks(routes.moves(there)));
+        Routes.Rules after = filling(c -> !c.equals(j.target()) && rules.mayFill(c));
+        if (downWith(routes(player, j.stand(), true, after, gone), fromHome, left)) return true;
+        Routes homeNow = Routes.search(mc.level, home, area, null, false, false, rules, PATH_BUDGET);
+        return homeNow.distance(player.blockPosition()) < 0 && !downWith(routes(player, true), homeNow, scaffoldCount());
+    }
+
+    /**
+     * Whether {@code routes} gets down to the ground ({@code fromHome} gets to), the nearest of it
+     * as {@link #goDown} goes, with no more than {@code blocks} junk blocks put in on the way.
+     */
+    private static boolean downWith(Routes routes, Routes fromHome, int blocks) {
+        LongArrayList order = routes.order();
+        for (int n = 0; n < order.size(); n++) {
+            BlockPos at = BlockPos.of(order.getLong(n));
+            if (fromHome.distance(at) < 0) continue;
+            List<BlockPos> way = routes.pathTo(at);
+            return way != null && Routes.blocks(routes.moves(way)) <= blocks;
+        }
+        return false;
     }
 
     /** How near a junk block's taking out may leave another out of reach: the steps of the same stair or bridge. */
@@ -1532,17 +1870,28 @@ public class SchematicBuilder extends Module {
         Routes fromHome = Routes.search(mc.level, home, bounds.grow(8, 6), null, false, false, rules, PATH_BUDGET);
         if (fromHome.distance(player.blockPosition()) >= 0) return false;
         // Steps of its own whatever it's put in already: they come out behind it as it goes.
-        if (cleanupBlocks >= CLEANUP_BLOCKS) routes = routes(player, true);
+        if (!mayBuildClearing()) routes = routes(player, true);
+        if (downBy(routes, fromHome, now)) return true;
+        // None but where junk blocks have come out already: back in there, this once, rather than
+        // left up there. They come out again behind it.
+        Routes refill = routes(player, player.blockPosition(), true,
+            filling(c -> rules.mayFill(c) || cleared.contains(c) && mayPut(c) && !besideTurned(c)), Set.of());
+        if (downBy(refill, fromHome, now)) return true;
+        LOGGER.debug("Schematic Builder: no way down from {} to the ground", player.blockPosition());
+        return false;
+    }
+
+    /** Sets off down {@code routes} to the nearest spot of the ground ({@code fromHome} gets to), if it can. */
+    private boolean downBy(Routes routes, Routes fromHome, long now) {
         LongArrayList order = routes.order();
         for (int n = 0; n < order.size(); n++) {
             BlockPos ground = BlockPos.of(order.getLong(n));
             if (fromHome.distance(ground) < 0) continue;
-            if (!follow(new Job(Kind.DOWN, ground, null, ground, 0), routes, now)) break;
+            if (!follow(new Job(Kind.DOWN, ground, null, ground, 0), routes, now)) return false;
             LOGGER.debug("Schematic Builder: no pillar to come down by, going down to {} by {}", ground, moves);
             clearBehind = true;
             return true;
         }
-        LOGGER.debug("Schematic Builder: no way down from {} to the ground", player.blockPosition());
         return false;
     }
 
@@ -1552,6 +1901,7 @@ public class SchematicBuilder extends Module {
 
     /** Leaves a junk block or prop in for now, and why. */
     private void leave(BlockPos b, String why) {
+        if (!why.equals(leftWhy.get(b))) LOGGER.debug("Schematic Builder: leaving {} in: {}", b, why);
         stuckProps.add(b.immutable());
         leftWhy.put(b.immutable(), why);
     }
@@ -1563,7 +1913,10 @@ public class SchematicBuilder extends Module {
             stuckProps.remove(e.getKey());
             return true;
         });
-        if (all) stuckProps.clear();
+        if (all) {
+            stuckProps.clear();
+            breakFails.clear();
+        }
     }
 
     /**
@@ -1600,11 +1953,47 @@ public class SchematicBuilder extends Module {
         return false;
     }
 
-    /** Junk blocks it may put in while clearing up, to get at the rest (which come out in turn). */
-    private static final int CLEANUP_BLOCKS = 64;
+    /**
+     * Junk blocks it may put in while clearing up, to get at the rest (which come out in turn), and
+     * one more for every two of the ones it had down when it started that are out by then: so a big
+     * build's clearing up doesn't stop halfway, but every block it puts in has to get two out. With
+     * two in for every one out (as it was), each block it stood on to take one out was another to
+     * take out, and clearing up the top of a farm put in 120 to take 81 out.
+     */
+    private static final int CLEANUP_BLOCKS = 32;
+    private static final int CLEANUP_OUT_PER_BLOCK = 2;
     /** Clearing up its junk blocks, and how many more it's put in doing it. */
     private boolean cleaning;
     private int cleanupBlocks;
+    /** The junk blocks it had down when it started clearing up. */
+    private final Set<BlockPos> junkAtStart = new HashSet<>();
+
+    /**
+     * Clearing up, whether the way to where {@code j} is done from is worth the junk blocks it puts
+     * in: no bridge, or fewer bridge blocks than the ones it takes out from there. One put in to
+     * take one out (a step to stand on beside the step it's taking out) never gets anywhere: that
+     * one's to come out next, from another step put in beside it, and so on round. A pillar's
+     * free: it's mined out from under it on the way down.
+     */
+    private boolean worthBuilding(Job j, Routes routes, Set<BlockPos> breakable) {
+        List<BlockPos> way = routes.pathTo(j.stand());
+        int in = way == null ? 0 : (int) routes.moves(way).stream().filter(m -> m == Routes.Move.BRIDGE).count();
+        if (in == 0) return true;
+        Vec3 eye = Vec3.atBottomCenterOf(j.stand()).add(0, EYE, 0);
+        int out = 0;
+        for (BlockPos b : breakable) {
+            if (!b.equals(j.stand().below()) && visibleFace(eye, b, reach.get() - BREAK_SLACK) != null && ++out > in) return true;
+        }
+        LOGGER.debug("Schematic Builder: not putting {} junk blocks in to take {} out from {}", in, out, j.stand());
+        return false;
+    }
+
+    /** Whether it may still put junk blocks in, clearing up, to get at the rest. */
+    private boolean mayBuildClearing() {
+        int out = 0;
+        for (BlockPos p : junkAtStart) if (mc.level.getBlockState(p).canBeReplaced()) out++;
+        return cleanupBlocks < CLEANUP_BLOCKS + out / CLEANUP_OUT_PER_BLOCK;
+    }
     /**
      * Where junk blocks were taken out while clearing up: none goes back in there, or it goes round
      * and round, putting back the pillar it's just taken out to get at the next one.
@@ -1637,6 +2026,39 @@ public class SchematicBuilder extends Module {
             if (!s.isAir() && !s.canBeReplaced() && !s.getShape(mc.level, next).isEmpty()) return true;
         }
         return false;
+    }
+
+    /**
+     * Whether blocks of the build beside {@code pos}, on its level, are still to go in, one of them
+     * (or one further along a row of them) with something to place it against already: they go in
+     * first, and then {@code pos} goes in against them, so a throwaway block for it now would come
+     * out again unused. Not past one it's had trouble with (set aside, or tried before): then the
+     * throwaway block it is.
+     */
+    private boolean comingBeside(BlockPos pos) {
+        Set<BlockPos> seen = new HashSet<>();
+        java.util.ArrayDeque<BlockPos> queue = new java.util.ArrayDeque<>();
+        seen.add(pos);
+        queue.add(pos);
+        while (!queue.isEmpty() && seen.size() < 48) {
+            BlockPos at = queue.poll();
+            for (Direction d : Direction.Plane.HORIZONTAL) {
+                BlockPos next = at.relative(d);
+                if (!seen.add(next) || !comesInFirst(next)) continue;
+                if (hasSupport(next)) return true;
+                queue.add(next);
+            }
+        }
+        return false;
+    }
+
+    /** A block of the build still to go in, whole (one to place against), and nothing holding it up: none it's had trouble with. */
+    private boolean comesInFirst(BlockPos pos) {
+        BlockState want = plan.get(pos);
+        if (want == null || Placing.fluid(want) || settled(pos) || passedOver(pos) || tries.getOrDefault(pos, 0) > 0) return false;
+        if (!want.isCollisionShapeFullBlock(mc.level, pos)) return false;
+        BlockState under = plan.get(pos.below());
+        return under == null || Placing.skipped(under) || settled(pos.below());
     }
 
     /**
@@ -1679,6 +2101,17 @@ public class SchematicBuilder extends Module {
      * against from there, turned right by the look: the throwaway block's job, or null.
      */
     private Job propToLookFrom(BlockPos pos, BlockState placing, Item item, BlockPos stand, Vec3 eye, double reachLimit, boolean steady) {
+        // A block of the build that's to go in beside it anyway and would do as well: that first.
+        for (Direction d : Direction.values()) {
+            BlockPos cell = pos.relative(d);
+            if (!comesInFirst(cell) || !hasSupport(cell)) continue;
+            List<Placing.Way> all = propWays.computeIfAbsent(pos, p -> new HashMap<>())
+                .computeIfAbsent(cell, c -> Placing.waysAgainst(mc.level, mc.player, pos, placing, new ItemStack(item), c));
+            for (Placing.Way way : all) {
+                float[] rot = rotation(eye, way.hit());
+                if (way.hit().distanceTo(eye) <= reachLimit && way.fits(rot[0], rot[1])) return null;
+            }
+        }
         for (Direction d : Direction.values()) {
             BlockPos cell = pos.relative(d);
             if (props.contains(cell) || passedOver(cell) || !mayPut(cell) || !hasSupport(cell)) continue;
@@ -1695,7 +2128,10 @@ public class SchematicBuilder extends Module {
                     if (!clearTo(eye.add(-dz / len * 0.15, 0, dx / len * 0.15), way.hit()) || !clearTo(eye.add(dz / len * 0.15, 0, -dx / len * 0.15), way.hit())) continue;
                 }
                 Job prop = propAt(cell, stand, eye, reachLimit);
-                if (prop != null) return prop;
+                if (prop != null) {
+                    propWhy.put(cell, "prop to turn " + placing.getBlock().getName().getString());
+                    return prop;
+                }
             }
         }
         return null;
@@ -1818,7 +2254,7 @@ public class SchematicBuilder extends Module {
         if (out.isEmpty()) return false;
         // Clearing up once it's all built, it may put a bridge or a stair in to get at one, as for its junk blocks.
         if (pending.isEmpty()) cleaning = true;
-        return takeOut(player, now, out, pending.isEmpty() ? routes(player, cleanupBlocks < CLEANUP_BLOCKS) : null, false, null);
+        return takeOut(player, now, out, pending.isEmpty() ? routes(player, mayBuildClearing()) : null, false, null);
     }
 
     /**
@@ -1866,14 +2302,22 @@ public class SchematicBuilder extends Module {
         for (Job j : options) {
             if (keepWays) {
                 if (checks++ >= WAY_CHECKS) break;
-                if (!keepsWays(j, exitTop, breakable)) {
+                String way = !keepsWays(j, exitTop, breakable) ? "the way to others" : !wayOutAfter(player, j, routes) ? "its way out" : null;
+                if (way != null) {
+                    LOGGER.debug("Schematic Builder: keeping {} in for now: {}", j.target(), way);
                     // Its way to others for now: after them.
                     passed.put(j.target(), now + 8000);
                     kept = true;
                     continue;
                 }
             }
+            if (cleaning && !worthBuilding(j, routes, breakable)) {
+                passed.put(j.target(), now + 8000);
+                kept = true;
+                continue;
+            }
             if (follow(j, routes, now)) {
+                LOGGER.debug("Schematic Builder: taking out {} from {} (cost {}, {} it can get at)", j.target(), j.stand(), j.cost(), options.size());
                 wayWaits = 0;
                 return true;
             }
@@ -1952,15 +2396,31 @@ public class SchematicBuilder extends Module {
             // Watching a dropper or a piston, which turn over with the power round them (a dropper
             // under a torch flips "triggered" the next time anything beside it changes): what's
             // planned beside it goes in first, and the throwaway blocks there come out, or that
-            // change sets the observer off, and with it whatever it powers.
+            // change sets the observer off, and with it whatever it powers. One it's left in (out of
+            // reach, say: boxed in down inside the machine) doesn't hold it up, or the build closes
+            // over the observer while it waits; once the observer's in, that one stays in for good.
             if (watched != null && fires(watched)) {
                 for (Direction d : Direction.values()) {
                     BlockPos next = at.relative(d);
                     BlockState beside = plan.get(next);
-                    if (props.contains(next) || scaffold.contains(next)) return false;
+                    if (props.contains(next) || scaffold.contains(next)) {
+                        if (leftWhy.containsKey(next)) continue;
+                        waitedOnJunk.add(pos);
+                        return false;
+                    }
                     if (next.equals(pos) || beside == null || Placing.skipped(beside) || settled(next)) continue;
                     if (tries.getOrDefault(next, 0) < 3 && !leftEmpty.contains(next)) return false;
                 }
+            }
+        }
+        // Something that burns, near lava: the blocks of its layer beside it go in first, so there's
+        // no air left beside it for lava to light (a fire there burns it, and you, if you're in it).
+        if (want.ignitedByLava()) {
+            for (Direction d : Direction.Plane.HORIZONTAL) {
+                BlockPos next = pos.relative(d);
+                BlockState beside = plan.get(next);
+                if (beside == null || Placing.skipped(beside) || beside.ignitedByLava() || Placing.fluid(beside) || settled(next)) continue;
+                if (tries.getOrDefault(next, 0) < 3 && !leftEmpty.contains(next) && firesReach(next)) return false;
             }
         }
         if (block instanceof PistonBaseBlock && (mc.level.hasNeighborSignal(pos) || mc.level.hasNeighborSignal(pos.above()) || primed(pos))) return false;
@@ -2457,8 +2917,17 @@ public class SchematicBuilder extends Module {
             if (!player.onGround()) return;
             int n = 1;
             while (pathIndex + n < path.size() && moves.get(pathIndex + n) == move) n++;
-            if (move == Routes.Move.PILLAR) startPillar(from, n, true);
-            else startDig(from.getY() - n, n);
+            if (move == Routes.Move.PILLAR) {
+                pillarWhy = "pillar" + (cleaning ? ", clearing up" : " for " + job.kind());
+                startPillar(from, n, true);
+                pillarClear = climbsOut(from, n);
+                if (pillarClear) LOGGER.debug("Schematic Builder: climbing out from {} for good, {} high, taking the pillar out under it", from, n);
+                // A ladder of scaffolding, its top block junk, where it'd save time: not one that comes out under it as it climbs.
+                pillarLadder = !pillarClear && ladderFits(player, from, n);
+            } else {
+                // Down to the last spot of the dig (a ladder's sunk through all the way in one).
+                startDig(path.get(pathIndex + n - 1).getY(), n);
+            }
             return;
         }
         // A block to put out to walk onto, unless it's there already.
@@ -2537,9 +3006,11 @@ public class SchematicBuilder extends Module {
         // means to drop down.
         boolean sneak = node.getY() >= from.getY() && (exposed(from) || exposed(node));
         // A hop to get unstuck, but never crouched at an edge: in the air crouching holds nothing,
-        // and a hop there with a key down goes over it.
+        // and a hop there with a key down goes over it. Nor going down more than a step: a hop off
+        // the top of a three-block drop is a fall of over four, and that hurts.
         boolean stuck = now - nodeProgressAt > 900;
-        boolean jump = player.onGround() && (up && horizontal < 1.4 || stuck && !sneak && now - lastJumpAt > 800);
+        boolean hop = stuck && !sneak && node.getY() >= from.getY() - 1 && now - lastJumpAt > 800;
+        boolean jump = player.onGround() && (up && horizontal < 1.4 || hop);
         if (jump) lastJumpAt = now;
         steering = Steer.toward(player, target, jump, sneak);
     }
@@ -2570,6 +3041,45 @@ public class SchematicBuilder extends Module {
 
     private boolean lavaIn(BlockPos pos) {
         return mc.level.getFluidState(pos).is(FluidTags.LAVA);
+    }
+
+    private boolean burning(BlockPos pos) {
+        return mc.level.getBlockState(pos).getBlock() instanceof BaseFireBlock;
+    }
+
+    /** Whether you'd catch fire standing with your feet in {@code feet}: fire there, or it could start there. */
+    private boolean catchesFire(BlockPos feet) {
+        return lightable(feet) || lightable(feet.above());
+    }
+
+    /** An empty cell that's on fire, or that fire could start in: something lava lights beside it, in fire's reach. */
+    private boolean lightable(BlockPos cell) {
+        BlockState state = mc.level.getBlockState(cell);
+        if (state.getBlock() instanceof BaseFireBlock) return true;
+        if (!state.isAir()) return false;
+        for (Direction d : Direction.values()) {
+            if (mc.level.getBlockState(cell.relative(d)).ignitedByLava()) return firesReach(cell);
+        }
+        return false;
+    }
+
+    /**
+     * Whether fire could get to {@code cell}, were there something that burns beside it: lava now
+     * and then lights the air a block over it (or a block either way), or two over (two either
+     * way); a fire spreads to a block either way of it, from one under it to four over.
+     */
+    private boolean firesReach(BlockPos cell) {
+        for (int up = 1; up <= 2; up++) {
+            for (int dx = -up; dx <= up; dx++) {
+                for (int dz = -up; dz <= up; dz++) {
+                    if (lavaIn(cell.offset(dx, -up, dz))) return true;
+                }
+            }
+        }
+        for (BlockPos p : BlockPos.betweenClosed(cell.offset(-1, -4, -1), cell.offset(1, 1, 1))) {
+            if (burning(p)) return true;
+        }
+        return false;
     }
 
     /** Where to look making for the edge to bridge from {@code from} to {@code to}: down at the back of the block underfoot. */
@@ -2631,6 +3141,8 @@ public class SchematicBuilder extends Module {
         if (mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit).consumesAction()) {
             player.swing(InteractionHand.MAIN_HAND);
             scaffold.add(cell.immutable());
+            putJunk(cell, (to.getY() < from.getY() ? "stair" : "bridge") + (cleaning ? ", clearing up" : " for " + job.kind()));
+            usedJunk(hit.getBlockPos());
             if (cleaning) cleanupBlocks++;
             changedAt(cell);
         }
@@ -2720,8 +3232,13 @@ public class SchematicBuilder extends Module {
         if (got == null || !Placing.matches(got, want)) return;
         if (mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit).consumesAction()) {
             player.swing(InteractionHand.MAIN_HAND);
-            if (prop) props.add(job.target().immutable());
-            else placedCount++;
+            usedJunk(hit.getBlockPos());
+            if (prop) {
+                props.add(job.target().immutable());
+                putJunk(job.target(), propWhy.getOrDefault(job.target(), "prop"));
+            } else {
+                placedCount++;
+            }
             if (!prop && placing != wanted) {
                 stood.put(job.target().immutable(), placing.getBlock());
                 StandIns.mark(job.target(), wanted.getBlock(), placing.getBlock());
@@ -2746,6 +3263,7 @@ public class SchematicBuilder extends Module {
             case POUR -> Placing.matches(have, want);
             case SOAK -> !Placing.needsWater(have, want);
             case CLICK -> Placing.clicks(have, want) == 0;
+            case SCOOP -> !isStillWater(pos);
             default -> !moreWater();
         };
         if (done) {
@@ -2765,7 +3283,7 @@ public class SchematicBuilder extends Module {
         Item hold = switch (j.kind()) {
             case POUR -> Placing.item(want);
             case SOAK -> Items.WATER_BUCKET;
-            case FILL -> Items.BUCKET;
+            case FILL, SCOOP -> Items.BUCKET;
             default -> null;
         };
         if (hold != null) {
@@ -2785,18 +3303,22 @@ public class SchematicBuilder extends Module {
         if (!aimed) {
             // Poured or soaked at the steadiest spot on the face; the pool's taken at the top of it, and
             // a click's at the middle of the face picked (a gate's swing goes by which way you face).
-            aim.setTarget(j.kind() == Kind.POUR || j.kind() == Kind.SOAK
+            // The water underfoot is scooped looking straight down (a hair ahead, so it doesn't spin round).
+            double yaw = Math.toRadians(player.getYRot());
+            aim.setTarget(j.kind() == Kind.SCOOP ? player.position().add(-Math.sin(yaw) * 0.05, -1, Math.cos(yaw) * 0.05)
+                : j.kind() == Kind.POUR || j.kind() == Kind.SOAK
                 ? steadyPoint(player.position().add(0, crouch ? EYE : STAND_EYE, 0), j.way(), null, null, pos) : j.way().hit());
             aimed = true;
         }
         // Crouched (or stood back up) a moment first, so the server knows before the click.
         if (now - phaseSince < 150 || player.isCrouching() != crouch || now < useAfter) return;
         boolean onTarget;
-        if (j.kind() == Kind.FILL) {
+        if (j.kind() == Kind.FILL || j.kind() == Kind.SCOOP) {
             Vec3 eye = player.getEyePosition();
             BlockHitResult hit = mc.level.clip(new ClipContext(eye, eye.add(player.getViewVector(1).scale(reach.get())),
                 ClipContext.Block.OUTLINE, ClipContext.Fluid.SOURCE_ONLY, player));
-            onTarget = hit.getType() == HitResult.Type.BLOCK && isPool(hit.getBlockPos()) && !plan.containsKey(hit.getBlockPos());
+            onTarget = hit.getType() == HitResult.Type.BLOCK && (j.kind() == Kind.SCOOP ? hit.getBlockPos().equals(pos)
+                : isPool(hit.getBlockPos()) && !plan.containsKey(hit.getBlockPos()));
         } else if (!(mc.hitResult instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) {
             onTarget = false;
         } else if (j.kind() == Kind.POUR) {
@@ -3040,16 +3562,27 @@ public class SchematicBuilder extends Module {
             return;
         }
         if (now - phaseSince > BREAK_TIMEOUT) {
+            LOGGER.debug("Schematic Builder: gave up breaking {} at {}: crouching {}, looking at {}, at {}, aiming at {}",
+                name(mc.level.getBlockState(pos)), pos, player.isCrouching(),
+                mc.hitResult instanceof BlockHitResult b ? b.getBlockPos() + " " + b.getDirection() : mc.hitResult,
+                player.position(), aim.target());
             if (onDown(now)) return;
+            // One of its own it can't get at, twice: left till the clearing up at the end. Set
+            // aside a while and no more, four such would take turns for good, the build waiting.
+            if (!planned && breakFails.merge(pos.immutable(), 1, Integer::sum) >= 2) leave(pos, OUT_OF_REACH);
             pass(pos, 20_000);
             go(Phase.IDLE);
             return;
         }
-        int tool = toolFor(mc.level.getBlockState(pos));
+        // Scaffolding breaks at a touch: in hand, its outline is the whole block, what the crosshair's on.
+        int tool = mc.level.getBlockState(pos).is(Blocks.SCAFFOLDING) ? hotbar(Items.SCAFFOLDING) : toolFor(mc.level.getBlockState(pos));
         if (tool >= 0 && player.getInventory().getSelectedSlot() != tool) player.getInventory().setSelectedSlot(tool);
         Vec3 face = visibleFace(player.getEyePosition(), pos, reach.get());
         if (face == null) {
             if (onDown(now)) return;
+            // Not from where it's got to after all (it's off the middle of the spot it planned
+            // from): one of its own, twice over, is left too, or it's back for it round and round.
+            if (!planned && breakFails.merge(pos.immutable(), 1, Integer::sum) >= 2) leave(pos, OUT_OF_REACH);
             pass(pos, 10_000);
             go(Phase.IDLE);
             return;
@@ -3058,7 +3591,9 @@ public class SchematicBuilder extends Module {
             aim.setTarget(face);
             aimed = true;
         }
-        if (mc.hitResult instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(pos)
+        digAt = pos.immutable();
+        // With a menu open the game won't hold attack for us, so mine the way it would have.
+        if (mc.screen != null && mc.hitResult instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(pos)
             && mc.gameMode.continueDestroyBlock(pos, hit.getDirection())) {
             player.swing(InteractionHand.MAIN_HAND);
         }
@@ -3069,12 +3604,13 @@ public class SchematicBuilder extends Module {
         // The last block gone again (the server didn't have it): put it in again.
         if (pillarPlaced > 0 && now - pillarPlacedAt > 600) {
             BlockPos last = new BlockPos(pillarAt.getX(), pillarBase + pillarPlaced - 1, pillarAt.getZ());
-            if (!mc.level.getBlockState(last).isSolid()) {
+            if (!ladder.contains(last) && !mc.level.getBlockState(last).isSolid()) {
                 scaffold.remove(last);
                 pillarPlaced--;
             }
         }
         if (pillarPlaced >= pillarHeight && player.onGround() && player.getY() >= pillarBase + pillarHeight - 0.01) {
+            if (pillarClear && clearUnder(player)) return;
             steering = Input.EMPTY;
             if (resumeRoute) {
                 resumeRoute = false;
@@ -3086,12 +3622,24 @@ public class SchematicBuilder extends Module {
             }
             return;
         }
-        if (now - phaseSince > 4000L + pillarHeight * 1500L) {
+        if (now - phaseSince > 4000L + pillarHeight * (pillarClear ? 6000L : 1500L)) {
             pass(job.target(), 20_000);
             steering = Input.EMPTY;
+            // A ladder it didn't get up: back down it, taking it down.
+            if (pillarPlaced == 0 && isLadder(pillarAt)) {
+                LOGGER.debug("Schematic Builder: gave up the ladder at {}, taking it down", pillarAt);
+                pillarLadder = false;
+                resumeRoute = false;
+                ladderAbort = true;
+                startDescend();
+                return;
+            }
             go(Phase.IDLE);
             return;
         }
+        if (pillarLadder && ladderUp(player, now)) return;
+        // Up on the last one put in: the one under it out first.
+        if (pillarClear && pillarPlaced >= 2 && player.onGround() && player.getY() >= pillarBase + pillarPlaced - 0.01 && clearUnder(player)) return;
         int slot = scaffoldSlot(player, true);
         if (slot < 0) {
             Notify.send("Schematic Builder", "Out of throwaway blocks for pillars and bridges", false, false, false);
@@ -3124,6 +3672,8 @@ public class SchematicBuilder extends Module {
             && mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit).consumesAction()) {
             player.swing(InteractionHand.MAIN_HAND);
             scaffold.add(cell.immutable());
+            putJunk(cell, pillarWhy);
+            usedJunk(hit.getBlockPos());
             if (cleaning) cleanupBlocks++;
             pillarPlaced++;
             pillarPlacedAt = now;
@@ -3137,9 +3687,304 @@ public class SchematicBuilder extends Module {
         pillarHeight = height;
         pillarBase = at.getY();
         pillarPlaced = 0;
+        pillarClear = false;
+        pillarLadder = false;
+        pillarLean = null;
         resumeRoute = resume;
         aimed = false;
         go(Phase.PILLAR);
+    }
+
+    // ---- Ladders: pillars of scaffolding (Use scaffolding)
+
+    /** Taking a ladder down from its foot, and given up on one it was putting up (back down it, then on). */
+    private boolean takingDown;
+    private boolean ladderAbort;
+    /** Which way it's looking while it puts a ladder up: down (at the floor, or the first one) or out level from inside it. */
+    private boolean ladderLookDown;
+    /** Which way it looks out of a ladder, kept as it climbs (the aim follows the eye up, or it ends up looking down). */
+    private double ladderYaw;
+    /** Scaffolding dug out on the way down, what it dropped still to pick up once off it. */
+    private boolean ladderDug;
+    private static final long DROPS_WAIT = 2500;
+
+    /** Scaffolding of its own, there now. */
+    private boolean isLadder(BlockPos cell) {
+        return ladder.contains(cell) && mc.level.getBlockState(cell).is(Blocks.SCAFFOLDING);
+    }
+
+    /**
+     * Whether the {@code n}-high pillar from {@code from} goes up as a ladder: Use scaffolding on,
+     * {@link #LADDER_MIN} high or more, scaffolding enough to hand, and stood square on a floor it stands on.
+     */
+    private boolean ladderFits(LocalPlayer player, BlockPos from, int n) {
+        if (!useScaffolding.get() || n < LADDER_MIN || stillPlanned.contains(Items.SCAFFOLDING) || count(Items.SCAFFOLDING) < n - 1) return false;
+        if (Math.abs(player.getY() - from.getY()) > 0.05) return false;
+        BlockPos floor = from.below();
+        if (!mc.level.getBlockState(floor).isFaceSturdy(mc.level, floor, Direction.UP)) return false;
+        for (int k = 0; k < n - 1; k++) {
+            BlockState state = mc.level.getBlockState(from.above(k));
+            if (!state.canBeReplaced() || !state.getFluidState().isEmpty() && !state.getFluidState().isSourceOfType(net.minecraft.world.level.material.Fluids.WATER)) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Puts a ladder up under a pillar's top block, from its foot: the first scaffolding into your
+     * own feet (looking down at the floor), the next on top of it (crouched, looking down at it),
+     * then the rest on top of the column, clicking out level from inside it while it climbs. Then
+     * out of the top and onto it; the junk block to stand on goes on as for any pillar. @return
+     * whether it's still at it.
+     */
+    private boolean ladderUp(LocalPlayer player, long now) {
+        int want = pillarHeight - 1;
+        BlockPos base = pillarAt;
+        int in = 0;
+        while (in < want && mc.level.getBlockState(base.above(in)).is(Blocks.SCAFFOLDING)) {
+            BlockPos cell = base.above(in).immutable();
+            if (ladder.add(cell)) {
+                scaffold.add(cell);
+                if (cleaning) cleanupBlocks++;
+                changedAt(cell);
+            }
+            in++;
+        }
+        Vec3 middle = Vec3.atBottomCenterOf(base);
+        Input drift = Math.hypot(middle.x - player.getX(), middle.z - player.getZ()) > 0.15 ? Steer.toward(player, middle, false, false) : Input.EMPTY;
+        if (in < want) {
+            int slot = hotbar(Items.SCAFFOLDING);
+            if (slot < 0) {
+                pillarLadder = false;
+                aimed = false;
+                if (in == 0) return false;
+                // Run out halfway: back down, taking it down, and another go from there.
+                ladderAbort = true;
+                resumeRoute = false;
+                startDescend();
+                return true;
+            }
+            if (player.getInventory().getSelectedSlot() != slot) player.getInventory().setSelectedSlot(slot);
+            boolean eyeIn = mc.level.getBlockState(BlockPos.containing(player.getEyePosition())).is(Blocks.SCAFFOLDING);
+            boolean down = in == 0 || !eyeIn;
+            // On top of the first from outside it: crouched, or the next goes out sideways.
+            boolean crouch = in > 0 && !eyeIn;
+            if (!aimed || ladderLookDown != down) {
+                ladderYaw = Math.toRadians(player.getYRot());
+                double yaw = ladderYaw;
+                aim.setTarget(down ? player.position().add(-Math.sin(yaw) * 0.05, -3, Math.cos(yaw) * 0.05)
+                    : player.getEyePosition().add(-Math.sin(yaw) * 3, -0.8, Math.cos(yaw) * 3));
+                aimed = true;
+                ladderLookDown = down;
+            } else if (!down) {
+                aim.track(player.getEyePosition().add(-Math.sin(ladderYaw) * 3, -0.8, Math.cos(ladderYaw) * 3));
+            }
+            // Up it as it goes up: climbing, jump held, while the top's well over your head, clicking
+            // on top of it on the way (let go of jump, it still rises a bit).
+            boolean climb = !down && player.getEyeY() + 0.7 < base.getY() + in;
+            steering = new Input(drift.forward(), drift.backward(), drift.left(), drift.right(), climb, crouch, false);
+            if (down && !player.onGround() || player.isShiftKeyDown() != crouch || now - ladderClickAt < 140 + random.nextInt(120)) return true;
+            if (down ? player.getXRot() < 80 : Math.abs(player.getXRot()) > 40) return true;
+            if (!(mc.hitResult instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return true;
+            BlockPos at = hit.getBlockPos();
+            boolean right = in == 0 ? at.equals(base.below()) && hit.getDirection() == Direction.UP
+                : down ? at.equals(base) && hit.getDirection() == Direction.UP
+                : hit.isInside() && at.getX() == base.getX() && at.getZ() == base.getZ() && at.getY() >= base.getY() && at.getY() < base.getY() + in
+                    && hit.getDirection().getAxis().isHorizontal();
+            if (right && mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit).consumesAction()) {
+                player.swing(InteractionHand.MAIN_HAND);
+                ladderClickAt = now;
+            }
+            return true;
+        }
+        // All in: up it, jump held over the middle, let go once out of the top to land on it.
+        if (!player.onGround() || player.getY() < base.getY() + want - 0.01) {
+            boolean out = player.getY() >= base.getY() + want;
+            steering = new Input(drift.forward(), drift.backward(), drift.left(), drift.right(), !out, false, false);
+            return true;
+        }
+        LOGGER.debug("Schematic Builder: up the ladder at {}, {} high, putting the top block on", base, want);
+        pillarLadder = false;
+        pillarPlaced = want;
+        pillarPlacedAt = now;
+        aimed = false;
+        steering = Input.EMPTY;
+        return false;
+    }
+
+    /**
+     * In a ladder's foot (one given up on halfway up, sunk down through), come down it: the
+     * scaffolding at your feet broken, looking down, and all of it over that comes down too; what
+     * it drops is picked up.
+     * @return whether it's at it.
+     */
+    private boolean takeDownLadder(LocalPlayer player, long now) {
+        BlockPos feet = player.blockPosition();
+        if (!isLadder(feet)) {
+            if (!takingDown) return false;
+            takingDown = false;
+            dropsUntil = now + DROPS_WAIT;
+            return true;
+        }
+        if (!takingDown) LOGGER.debug("Schematic Builder: taking down the ladder at {}", feet);
+        takingDown = true;
+        if (now - phaseSince > 30_000) {
+            takingDown = false;
+            go(Phase.IDLE);
+            return true;
+        }
+        // Out of hand, scaffolding's outline is its frame: looking down from in the column, the
+        // crosshair's through the one at your head, on the one at your feet. With it in hand (the
+        // whole hotbar of it) it's on the one at your head, and that goes first.
+        Inventory inventory = player.getInventory();
+        if (inventory.getSelectedItem().is(Items.SCAFFOLDING)) {
+            for (int i = 0; i < 9; i++) {
+                if (!inventory.getItem(i).is(Items.SCAFFOLDING)) {
+                    inventory.setSelectedSlot(i);
+                    break;
+                }
+            }
+        }
+        double yaw = Math.toRadians(player.getYRot());
+        Vec3 point = Vec3.atCenterOf(feet).add(-Math.sin(yaw) * 0.05, 0.5, Math.cos(yaw) * 0.05);
+        if (aim.target() == null || aim.target().distanceTo(point) > 0.5) aim.setTarget(point);
+        digAt = mc.hitResult instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK && isLadder(hit.getBlockPos())
+            && hit.getBlockPos().getX() == feet.getX() && hit.getBlockPos().getZ() == feet.getZ() ? hit.getBlockPos().immutable() : feet.immutable();
+        return true;
+    }
+
+    /**
+     * Scaffolding a ladder taken down dropped, lying near: walked over to crouched (so never off an
+     * edge) till it's picked up, or still falling, till the wait's over. @return whether it's at it.
+     */
+    private boolean collectDrops(LocalPlayer player, long now) {
+        if (now >= dropsUntil) return false;
+        net.minecraft.world.entity.item.ItemEntity nearest = null;
+        double best = Double.MAX_VALUE;
+        boolean falling = false;
+        for (net.minecraft.world.entity.Entity e : com.cyanite.client.system.WorldScan.entities()) {
+            if (!(e instanceof net.minecraft.world.entity.item.ItemEntity item) || !item.getItem().is(Items.SCAFFOLDING)) continue;
+            double dx = item.getX() - player.getX();
+            double dz = item.getZ() - player.getZ();
+            double dy = item.getY() - player.getY();
+            double flat = dx * dx + dz * dz;
+            if (flat > 6.25 || dy < -0.6 || dy > 48) continue;
+            if (dy > 0.6 || !item.onGround()) {
+                falling = true;
+                continue;
+            }
+            if (flat < best) {
+                best = flat;
+                nearest = item;
+            }
+        }
+        // The first drops take a moment to show up.
+        if (nearest == null && !falling) return now - (dropsUntil - DROPS_WAIT) < 500;
+        steering = nearest == null ? Input.EMPTY : Steer.toward(player, nearest.position(), false, true);
+        return true;
+    }
+
+    /** Whether nothing of its own sits on the ladder over {@code b} (its top block's out): taken out there, all of it over that comes down with it. */
+    private boolean bareLadder(BlockPos b) {
+        BlockPos top = ladderTop(b);
+        return !scaffold.contains(top.above()) && !props.contains(top.above());
+    }
+
+    /** The top of the ladder {@code b}'s in; {@code b} itself if it's no ladder. */
+    private BlockPos ladderTop(BlockPos b) {
+        if (!isLadder(b)) return b;
+        BlockPos top = b;
+        while (isLadder(top.above())) top = top.above();
+        return top;
+    }
+
+    /**
+     * Whether the {@code n}-high pillar from {@code from}, next on the route, is the way up out of
+     * somewhere it couldn't walk back into from where it started (the bottom of a shaft in the
+     * build), onto something of the build's, clearing up: it's coming up out of there for good, so
+     * the pillar comes out under it as it goes (a pillar left down there, nothing could reach).
+     */
+    private boolean climbsOut(BlockPos from, int n) {
+        int next = pathIndex + n;
+        if (!cleaning || next > path.size()) return false;
+        if (next < path.size()) {
+            // On along the route, walking off the top onto the build.
+            if (moves.get(next) != Routes.Move.WALK || !buildFloor(path.get(next).below())) return false;
+        } else if (!walksOff(path.get(next - 1))) {
+            // The top's where it's going: only with the build beside it to walk off onto after.
+            return false;
+        }
+        Routes fromHome = Routes.search(mc.level, home, bounds.grow(8, 6), null, false, false, rules, PATH_BUDGET);
+        return fromHome.distance(from) < 0;
+    }
+
+    /** Something of the build's to stand on at {@code floor}, not a junk block or a prop. */
+    private boolean buildFloor(BlockPos floor) {
+        return !scaffold.contains(floor) && !props.contains(floor) && !mc.level.getBlockState(floor).getCollisionShape(mc.level, floor).isEmpty();
+    }
+
+    /** Whether there's a step beside {@code feet}, level or one up, onto the build, to walk off onto. */
+    private boolean walksOff(BlockPos feet) {
+        for (Direction d : Direction.Plane.HORIZONTAL) {
+            for (int up = 0; up <= 1; up++) {
+                BlockPos at = feet.relative(d).above(up);
+                if (buildFloor(at.below()) && rules.mayStand(at) && Paths.clearAir(mc.level, at) && Paths.clearAir(mc.level, at.above())
+                    && (up == 0 || Paths.clearAir(mc.level, feet.above(2)))) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Takes out the block of the pillar under the one it's on, crouched out over the edge to see
+     * its side; then back over the middle to go on. @return whether it's still at it.
+     */
+    private boolean clearUnder(LocalPlayer player) {
+        BlockPos on = new BlockPos(pillarAt.getX(), pillarBase + pillarPlaced - 1, pillarAt.getZ());
+        BlockPos under = on.below();
+        Vec3 middle = Vec3.atBottomCenterOf(on.above());
+        if (under.getY() >= pillarBase && scaffold.contains(under) && !stuckProps.contains(under)
+            && !mc.level.getBlockState(under).canBeReplaced() && quietOut(under)) {
+            if (pillarLean == null) pillarLean = leanFor(under);
+            Vec3 face = null;
+            if (pillarLean != null) {
+                Direction d = pillarLean;
+                steering = Steer.toward(player, middle.add(d.getStepX() * 0.9, 0, d.getStepZ() * 0.9), false, true);
+                double out = (player.getX() - middle.x) * d.getStepX() + (player.getZ() - middle.z) * d.getStepZ();
+                if (out < 0.6 || !player.isCrouching()) return true;
+                face = visibleFace(player.getEyePosition(), under, reach.get());
+            }
+            if (face != null) {
+                int tool = toolFor(mc.level.getBlockState(under));
+                if (tool >= 0 && player.getInventory().getSelectedSlot() != tool) player.getInventory().setSelectedSlot(tool);
+                if (aim.target() == null || aim.target().distanceTo(face) > 0.3) aim.setTarget(face);
+                digAt = under.immutable();
+                return true;
+            }
+            LOGGER.debug("Schematic Builder: can't get at {} under the pillar it's climbing out on (leaning {})", under, pillarLean);
+            leave(under, OUT_OF_REACH);
+        } else if (mc.level.getBlockState(under).canBeReplaced() && scaffold.remove(under)) {
+            cleared.add(under.immutable());
+            changedAt(under);
+        }
+        // Back over the middle before going on up, looking down again.
+        if (pillarLean != null) aimed = false;
+        pillarLean = null;
+        if (Math.hypot(middle.x - player.getX(), middle.z - player.getZ()) > 0.15) {
+            steering = Steer.toward(player, middle, false, true);
+            return true;
+        }
+        return false;
+    }
+
+    /** Which way to lean out from over {@code under} to see its side: open beside it from there on up past your head, and nothing to set off. */
+    private Direction leanFor(BlockPos under) {
+        for (Direction d : Direction.Plane.HORIZONTAL) {
+            BlockPos side = under.relative(d);
+            boolean open = rules.mayStand(side.above(2));
+            for (int k = 0; k <= 3 && open; k++) open = Paths.clearAir(mc.level, side.above(k));
+            if (open) return d;
+        }
+        return null;
     }
 
     /** Down the pillar underfoot, mining it out from under itself, all the way. */
@@ -3161,6 +4006,8 @@ public class SchematicBuilder extends Module {
     private boolean safeDig(BlockPos block) {
         for (int k = 1; k <= 3; k++) {
             BlockPos at = block.below(k);
+            // Down a ladder of its own: its foot's where it put it up from.
+            if (isLadder(at)) return true;
             BlockState state = mc.level.getBlockState(at);
             if (state.getFluidState().is(FluidTags.LAVA) || state.is(net.minecraft.world.level.block.Blocks.MAGMA_BLOCK)) return false;
             if (!state.getCollisionShape(mc.level, at).isEmpty()) return true;
@@ -3171,9 +4018,39 @@ public class SchematicBuilder extends Module {
     /** Mines the pillar out from under its feet, a block at a time: back down to the ground, or as far as the route goes. */
     private void descend(LocalPlayer player, long now) {
         steering = Input.EMPTY;
-        BlockPos under = player.blockPosition().below();
+        if (dropsUntil > 0) {
+            if (collectDrops(player, now)) return;
+            dropsUntil = 0;
+        }
+        BlockPos feet = player.blockPosition();
+        BlockPos under = feet.below();
+        // In a ladder (one given up on halfway up): crouched, sinking through it to its foot. On
+        // top of one, it's dug out from under your feet like any junk block (it breaks at a touch),
+        // what it drops coming down with you.
+        if (isLadder(feet) && (!player.onGround() || isLadder(under))) {
+            if (now - phaseSince > 30_000) {
+                go(Phase.IDLE);
+                return;
+            }
+            steering = new Input(false, false, false, false, false, true, false);
+            return;
+        }
         if (!player.onGround()) return;
-        if (digTo != Integer.MIN_VALUE && player.blockPosition().getY() <= digTo) {
+        // At its foot, in it: taken down before going on.
+        if (takeDownLadder(player, now)) return;
+        if (ladderAbort) {
+            ladderAbort = false;
+            go(Phase.IDLE);
+            return;
+        }
+        boolean bottom = digTo != Integer.MIN_VALUE && feet.getY() <= digTo;
+        if (ladderDug && (bottom || !isLadder(under))) {
+            // Off the scaffolding it dug down through: what that dropped picked up first.
+            ladderDug = false;
+            dropsUntil = now + DROPS_WAIT;
+            return;
+        }
+        if (bottom) {
             // As far down as the route goes: on along it.
             digTo = Integer.MIN_VALUE;
             pathIndex += digCount;
@@ -3182,11 +4059,16 @@ public class SchematicBuilder extends Module {
             return;
         }
         if (!scaffold.contains(under) || !safeDig(under) || !quietOut(under)) {
-            scaffold.removeIf(p -> !mc.level.getBlockState(p).isSolid());
+            scaffold.removeIf(p -> !mc.level.getBlockState(p).isSolid() && !isLadder(p));
             // Down the pillar it left by: what was out of reach from up there gets another look.
+            // On the ground for good only where it can walk off to where it started from (not at
+            // the bottom of a shaft in the build, say, with the way out still to put up).
             if (cleaning && digTo == Integer.MIN_VALUE) {
+                boolean out = Routes.search(mc.level, home, bounds.grow(8, 6), null, false, false, rules, PATH_BUDGET)
+                    .distance(player.blockPosition()) >= 0;
+                LOGGER.debug("Schematic Builder: down {} at {}", out ? "for good" : "the pillar, but not out", player.blockPosition());
                 cameDown = true;
-                onGroundForGood = true;
+                onGroundForGood = out;
             }
             digTo = Integer.MIN_VALUE;
             go(Phase.IDLE);
@@ -3207,7 +4089,10 @@ public class SchematicBuilder extends Module {
             aim.setTarget(top.add(-Math.sin(Math.toRadians(player.getYRot())) * 0.05, 0, Math.cos(Math.toRadians(player.getYRot())) * 0.05));
             aimed = true;
         }
-        if (mc.hitResult instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(under)
+        digAt = under.immutable();
+        if (isLadder(under)) ladderDug = true;
+        // With a menu open the game won't hold attack for us, so mine the way it would have.
+        if (mc.screen != null && mc.hitResult instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(under)
             && mc.gameMode.continueDestroyBlock(under, hit.getDirection())) {
             player.swing(InteractionHand.MAIN_HAND);
         }
@@ -3254,16 +4139,80 @@ public class SchematicBuilder extends Module {
             Item junk = junkItem();
             needed.merge(junk, count(junk) + JUNK_STACK, Math::max);
         }
+        // Scaffolding for ladders, the same way.
+        if (useScaffolding.get() && buildUp.get() && !pending.isEmpty() && !stillPlanned.contains(Items.SCAFFOLDING) && count(Items.SCAFFOLDING) < LADDER_LOW) {
+            needed.merge(Items.SCAFFOLDING, count(Items.SCAFFOLDING) + LADDER_STACK, Math::max);
+        }
         int free = freeSlots();
-        Map.Entry<Item, Integer> worst = null;
+        cramped = null;
+        Map<Item, Integer> lacking = new HashMap<>();
         for (Map.Entry<Item, Integer> e : needed.entrySet()) {
-            if (buyTried.contains(e.getKey())) continue;
-            int lacking = e.getValue() - count(e.getKey());
-            // Buckets of lava or water don't stack: no more than there's room for, with a slot to spare.
-            if (e.getKey().getDefaultMaxStackSize() == 1) lacking = Math.min(lacking, free - 1);
-            if (lacking > 0 && (worst == null || lacking > worst.getValue())) worst = Map.entry(e.getKey(), lacking);
+            Item item = e.getKey();
+            if (buyTried.contains(item)) continue;
+            int n = e.getValue() - count(item);
+            if (n <= 0) continue;
+            // Stopped for want of room: again once there's more of it.
+            Integer was = noRoom.get(item);
+            if (was != null && free <= was) {
+                if (cramped == null || count(item) == 0) cramped = item;
+                continue;
+            }
+            noRoom.remove(item);
+            lacking.put(item, n);
+        }
+        // No more than fits with a slot to spare: bought into a full inventory it'd land on the
+        // ground, paid for all the same. Not room for the lot, the slots are shared out: what
+        // needs fewest gets all it needs, the rest split evenly.
+        int pool = Math.max(0, free - 1);
+        for (Item item : lacking.keySet()) pool += Math.ceilDiv(count(item), item.getDefaultMaxStackSize());
+        List<Item> order = new ArrayList<>(lacking.keySet());
+        order.sort(Comparator.comparingInt(item -> Math.ceilDiv(count(item) + lacking.get(item), item.getDefaultMaxStackSize())));
+        Map.Entry<Item, Integer> worst = null;
+        boolean worstHasNone = false;
+        for (int i = 0; i < order.size(); i++) {
+            Item item = order.get(i);
+            int stack = item.getDefaultMaxStackSize();
+            int have = count(item);
+            // A slot at least while there's one, so the few-of what needs fewest isn't shared down to none.
+            int even = Math.max(0, pool) / (order.size() - i);
+            if (even == 0 && pool > 0) even = 1;
+            int share = Math.min(Math.ceilDiv(have + lacking.get(item), stack), even);
+            pool -= Math.max(share, Math.ceilDiv(have, stack));
+            int n = Math.min(lacking.get(item), Math.min(Math.max(0, share * stack - have), roomFor(item)));
+            if (n < lacking.get(item)) {
+                if (cramped == null || have == 0) cramped = item;
+                // The rest once it's down to its last stack: off to /ah for every slot built would crawl.
+                if (have >= stack) continue;
+                // Whole stacks, so what comes in stacks leaves the spare slot be.
+                n -= n % stack;
+            }
+            if (n <= 0) continue;
+            // What you've none of at all first, then the most lacking.
+            boolean none = have == 0;
+            if (worst == null || none && !worstHasNone || none == worstHasNone && n > worst.getValue()) {
+                worst = Map.entry(item, n);
+                worstHasNone = none;
+            }
         }
         return worst;
+    }
+
+    /** Short of something it's none of, the inventory too full to buy it. */
+    private boolean waitingForRoom() {
+        return buy.get() && cramped != null && count(cramped) == 0 && freeSlots() <= 1;
+    }
+
+    /** How many more of {@code item} fit in the inventory with a slot to spare. */
+    private int roomFor(Item item) {
+        Inventory inventory = mc.player.getInventory();
+        int empty = 0;
+        int topUp = 0;
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = inventory.getItem(i);
+            if (stack.isEmpty()) empty++;
+            else if (stack.is(item) && stack.getComponentsPatch().isEmpty()) topUp += Math.max(0, stack.getMaxStackSize() - stack.getCount());
+        }
+        return Math.max(0, empty - 1) * item.getDefaultMaxStackSize() + topUp;
     }
 
     /** How many of each item what's left takes: just the layer it's on, with {@code layerOnly} (and Layer by layer). */
@@ -3316,10 +4265,21 @@ public class SchematicBuilder extends Module {
         if (buyer.got() > 0) bought.merge(item, buyer.got(), Integer::sum);
         // And the empty buckets they'll leave, once poured: those go back with /sell too.
         if (buyer.got() > 0 && filled(item)) bought.merge(Items.BUCKET, buyer.got(), Integer::sum);
+        String what = AuctionBuyer.name(item);
+        if (buyer.got() > 0) toldFull.remove(item);
+        // Stopped for want of room: not one it can't buy. The rest once there's room.
+        if (buyer.full()) {
+            buyTried.remove(item);
+            noRoom.put(item, freeSlots());
+            Notify.send("Schematic Builder", (buyer.got() > 0 ? "Bought " + buyer.got() + " " + what + " for " + dollars(buyer.spent()) + "; no room for more"
+                : "No room for " + what) + " yet, the rest once some's built", false, false, false);
+            nextActAt = now + 600;
+            go(Phase.IDLE);
+            return;
+        }
         // Got all it went for (only as many as there was room for, say): more can be bought once there's room.
         if (buyer.got() >= buyingWant) buyTried.remove(item);
         else cantBuy.add(item);
-        String what = AuctionBuyer.name(item);
         // What it costs, said either way, so you know why it did what it did.
         double cheapest = buyer.cheapestEach();
         String price = !Double.isNaN(cheapest) ? "cheapest is " + dollars(cheapest) + " each, your max is " + dollars(maxEach.get())
@@ -3344,7 +4304,9 @@ public class SchematicBuilder extends Module {
      */
     private boolean sell(boolean end) {
         if (!sellLeftovers.get() || bought.isEmpty()) return false;
-        Map<Item, Integer> keep = end ? Map.of() : needed(true);
+        // What's still to be built with: just this layer's, unless it all got bought at once
+        // (selling the next layers' only to buy them again would throw money away).
+        Map<Item, Integer> keep = end ? Map.of() : needed(buyPerLayer.get());
         if (!end) {
             // And what's wanted below, set aside for now: it gets another go, and selling it only
             // to buy it all again would throw money away.
@@ -3363,6 +4325,7 @@ public class SchematicBuilder extends Module {
             int hold = keep.getOrDefault(item, 0);
             // Junk blocks to tower up and bridge on: a stack stays while there's building left.
             if (!end && (buildUp.get() || bridge.get()) && SCAFFOLD.contains(item)) hold += JUNK_STACK;
+            if (!end && useScaffolding.get() && item == Items.SCAFFOLDING) hold += LADDER_STACK;
             int n = Math.min(count(item) - Math.max(hold, own.getOrDefault(item, 0)), e.getValue() - soldBack.getOrDefault(item, 0));
             if (n > 0) sell.put(item, n);
         }
@@ -3535,13 +4498,157 @@ public class SchematicBuilder extends Module {
             LOGGER.debug("Schematic Builder: junk left in: {}", leftIn);
         }
         if (skippedCount > 0) sb.append(". Skipped ").append(skippedCount).append(" (running water and lava, which come from their source)");
+        goneJunk(true);
+        if (junkPut > 0) LOGGER.debug("Schematic Builder: junk blocks: {} put in, {} never stood on or built against: {}", junkPut,
+            junkWasted.values().stream().mapToInt(Integer::intValue).sum(), junkWasted);
         return sb.toString();
+    }
+
+    // ---- Wasted junk (debug log only)
+
+    /** A junk block or prop just put in, and what for. */
+    private void putJunk(BlockPos pos, String why) {
+        junkPut++;
+        junkWhy.put(pos.immutable(), why);
+    }
+
+    /** A junk block or prop stood on or built against: it was worth putting in. */
+    private void usedJunk(BlockPos pos) {
+        junkWhy.remove(pos);
+    }
+
+    /** Junk blocks under your feet count as used. */
+    private void stoodOnJunk(LocalPlayer player) {
+        if (junkWhy.isEmpty() || !player.onGround()) return;
+        AABB box = player.getBoundingBox();
+        int y = Mth.floor(box.minY - 0.05);
+        for (int x = Mth.floor(box.minX + 0.01); x <= Mth.floor(box.maxX - 0.01); x++) {
+            for (int z = Mth.floor(box.minZ + 0.01); z <= Mth.floor(box.maxZ - 0.01); z++) junkWhy.remove(new BlockPos(x, y, z));
+        }
+    }
+
+    /** Junk gone again without ever being used (or, at the end, all still unused) counts as wasted. */
+    private void goneJunk(boolean all) {
+        junkWhy.entrySet().removeIf(e -> {
+            if (!all && !mc.level.getBlockState(e.getKey()).canBeReplaced()) return false;
+            junkWasted.merge(e.getValue(), 1, Integer::sum);
+            LOGGER.debug("Schematic Builder: wasted junk block at {} ({})", e.getKey(), e.getValue());
+            return true;
+        });
     }
 
     private void stop(String why) {
         report = "Stopped: " + why;
         Notify.send("Schematic Builder stopped", why, true, true, true);
         setEnabled(false);
+    }
+
+    // ---- Back after a dropped connection (Rejoin)
+
+    @Override
+    public boolean wantsRejoin() {
+        return rejoin.on() && owner != null && !paused && !plan.isEmpty();
+    }
+
+    @Override
+    public boolean rejoinUnknown() {
+        return rejoin.unknown();
+    }
+
+    @Override
+    public int rejoinTries() {
+        return rejoin.tries();
+    }
+
+    @Override
+    public long rejoinDelay() {
+        return rejoin.delay();
+    }
+
+    @Override
+    public void rejoinEnded(String why) {
+        stop(why);
+    }
+
+    /**
+     * Back on the server after a rejoin: on with the build once it's where it left, the world's
+     * loaded round it and the schematic's still where it was in Litematica.
+     */
+    private void rejoined(LocalPlayer player) {
+        steering = Input.EMPTY;
+        digAt = null;
+        // Hands off the camera till it carries on: what it was looking at may be nowhere near (a lobby on the way in).
+        aim.clear();
+        switch (rejoin.back(player)) {
+            case HERE -> {
+                String moved = placementMoved();
+                if (moved != null) stop(moved);
+                else carryOn(player);
+            }
+            case LOST -> stop(rejoin.lostWhy(player));
+            default -> {
+            }
+        }
+    }
+
+    /** Why the build can't go on: Litematica has its placement somewhere else now. Null if it hasn't moved (or isn't there to tell). */
+    private String placementMoved() {
+        if (builtKey == null || !Litematica.installed()) return null;
+        boolean elsewhere = false;
+        for (Litematica.Placement p : Litematica.placements()) {
+            if (!p.key().equals(builtKey)) continue;
+            if (p.origin().equals(builtOrigin)) return null;
+            elsewhere = true;
+        }
+        return elsewhere ? "Back on the server, but " + planName + " has been moved in Litematica" : null;
+    }
+
+    /**
+     * Picks up with the new player. The plan, what's built and the junk blocks it put in stay as
+     * they were; what was half done (a walk, a pillar, a purchase) is worked out again from here,
+     * and the time it was gone doesn't count.
+     */
+    private void carryOn(LocalPlayer player) {
+        String why = Rejoin.why();
+        Rejoin.back();
+        long now = System.currentTimeMillis();
+        startedAt += rejoin.gone(now);
+        // A purchase cut off: what it got before the drop is counted, and the rest can be bought again.
+        if (phase == Phase.BUY) {
+            spent += buyer.spent();
+            if (buyer.got() > 0) bought.merge(buyingItem, buyer.got(), Integer::sum);
+            if (buyer.got() > 0 && filled(buyingItem)) bought.merge(Items.BUCKET, buyer.got(), Integer::sum);
+            buyTried.remove(buyingItem);
+        }
+        buyer.cancel();
+        seller.cancel();
+        owner = player;
+        job = null;
+        path = null;
+        moves = null;
+        resumeRoute = false;
+        resumeWalk = null;
+        clearBehind = false;
+        pillarClear = false;
+        pillarLadder = false;
+        takingDown = false;
+        ladderAbort = false;
+        dropsUntil = 0;
+        ladderDug = false;
+        digTo = Integer.MIN_VALUE;
+        nodeFor = -1;
+        arrivedAt = 0;
+        aimed = false;
+        lastMoveAt = now;
+        nodeProgressAt = now;
+        lastTick = now;
+        nextActAt = now + 500;
+        scanIn = 0;
+        steering = Input.EMPTY;
+        aim.clear();
+        go(Phase.IDLE);
+        LOGGER.debug("Schematic Builder: rejoined at {} after: {}", player.blockPosition(), why);
+        Notify.send("Schematic Builder back", "Rejoined after: " + Disconnects.brief(why, 56), true, false, false);
     }
 
     // ---- Drawing

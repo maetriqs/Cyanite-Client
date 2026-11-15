@@ -1,15 +1,19 @@
 package com.cyanite.client.modules.world;
 
 import com.cyanite.client.modules.combat.AntiBot;
+import com.cyanite.client.modules.donut.AuctionBuyer;
 import com.cyanite.client.modules.donut.DrillCut;
 import com.cyanite.client.modules.player.AutoEat;
 import com.cyanite.client.system.Category;
+import com.cyanite.client.system.Disconnects;
 import com.cyanite.client.system.HumanAim;
 import com.cyanite.client.system.Keys;
 import com.cyanite.client.system.Targets;
 import com.cyanite.client.system.Module;
 import com.cyanite.client.system.Modules;
 import com.cyanite.client.system.Notify;
+import com.cyanite.client.system.Rejoin;
+import com.cyanite.client.system.Resume;
 import com.cyanite.client.system.setting.BoolSetting;
 import com.cyanite.client.system.setting.ModeSetting;
 import com.cyanite.client.system.setting.SliderSetting;
@@ -40,6 +44,7 @@ import net.minecraft.world.item.component.ItemAttributeModifiers;
 import net.minecraft.world.item.enchantment.EnchantmentEffectComponents;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.FallingBlock;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.entity.monster.skeleton.AbstractSkeleton;
@@ -57,10 +62,13 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 
@@ -85,27 +93,49 @@ import java.util.Set;
  * down the tunnel, since the drill lays its square across the way you face. It keeps going with a
  * menu open, stops for any hostile mob in sight, and draws the tunnel ahead.
  *
- * <p>Lava ahead doesn't stop it unless Go round obstacles is off. It turns off sideways just far enough
- * that the tunnel on from there stays a block clear of the lava, carries on the way it was going,
- * and once it's past, cuts back onto the line it started on. Every stretch gets the same lava check
- * before it's dug, so it never opens up a block next to lava. Bedrock, a block that won't break,
- * and a hole too big to fill or step down get gone round the same way.
+ * <p>Lava ahead doesn't stop it unless Go round obstacles is off. It plans the shortest way round
+ * (WayRound), however big the pool, within Detour range to either side: a few straight stretches
+ * that all stay a block clear of the lava, backing out first if it has to. Once it's past, it cuts
+ * back onto the line it started on. Every stretch gets the same lava check before it's dug, so it
+ * never opens up a block next to lava. A hole too big to fill or step down gets gone round the
+ * same way. Bedrock, or any block that won't break, gets mined up over (Unbreakable blocks: Mine
+ * up): it digs out the block above your head, jumps and puts a block under your feet, the way
+ * you'd pillar up, until the tunnel's clear of it a level or few higher, and carries on from up
+ * there. Not into lava, water or gravel above, and only with blocks enough; otherwise it goes
+ * round it. With no way past at all (a lava sea), it digs on off to
+ * the side with the shorter way, or back alongside its own tunnel, rather than stop. Water counts
+ * the same as lava (unless Stop at water is on, then it stops short of it): you can't breathe in
+ * it, and mining under water is five times slower. If your head ends up under water anyway, it lets
+ * go and backs out down the tunnel it came along, swimming up, until you can breathe.
+ *
+ * <p>A block that breaks and comes straight back (the server said no) gets a moment's rest before
+ * it's hit again, the way you'd let go and click again.
  *
  * <p>Lava under the floor is no danger (lava never flows up), so a lava pit is just a hole: it's
  * filled from the bottom up when the bottom's in reach, and otherwise bridged, the way a player
  * does it: facing back, crouched at the very edge, a block placed against the front of the one
- * you stand on. It never steps down into lava.
+ * you stand on. It never steps down into lava. A bridge is only started when the far side is in
+ * sight and there are blocks enough to get there; otherwise the drop is gone round, or it digs on
+ * another way, the same as for lava.
  *
  * <p>Left running, it looks after itself. It fights hostile mobs that come at it (best weapon in
  * the hotbar, backing off from a creeper that's about to go), eats when it gets hungry, mends the
- * drill with Bottles o' Enchanting thrown at its feet from the off hand (or swaps in a spare when
- * there are none), and fills or bridges any hole in the floor. A full inventory doesn't stop it:
+ * drill with Bottles o' Enchanting thrown at its feet from the off hand (with none left, it buys a
+ * stack off /ah if you let it, Buy XP from /ah, or swaps in a spare), and fills or bridges any hole
+ * in the floor. A full inventory doesn't stop it:
  * it digs on and what it breaks stays on the floor (Inventory full: Keep mining). Set to Drop junk,
  * it turns round and throws the junk (cobblestone, deepslate, tuff, gravel and the like) back down
  * the tunnel instead, keeping one stack of it for holes. If health gets low or another player
  * comes close, it leaves the server.
+ *
+ * <p>Losing the server doesn't end the run when it can be helped (Rejoin after disconnect). A
+ * dropped connection, a restart, a full server or a proxy that still has you logged in gets a
+ * countdown and a rejoin ({@link Rejoin}, tried again with longer waits), and once you're back where
+ * you left off and the world's in round you, it carries on down the same tunnel. A ban, a dead
+ * session, someone else on the account, an anticheat or a staff kick stops it ({@link Disconnects}),
+ * and so does leaving on purpose (Auto Log, Base Guard, its own Leave settings).
  */
-public class AutoMine extends Module {
+public class AutoMine extends Module implements Rejoin.Client {
     private static final long STUCK_NANOS = 20_000_000_000L;
     private static final long BLOCKED_NANOS = 400_000_000L;
     private static final int TOOL_RESERVE = 10;
@@ -134,11 +164,27 @@ public class AutoMine extends Module {
     private static final long FILL_GIVE_UP = 4000;
     /** The longest gap it'll build a bridge across. */
     private static final int MAX_BRIDGE = 64;
+    /** A bridge with no block placed for this long isn't working out. */
+    private static final long BRIDGE_GIVE_UP = 8000;
+    /** Bottles o' Enchanting bought at a go: a stack. */
+    private static final int XP_STACK = 64;
+    /** A purchase that came to nothing is tried again this much later. */
+    private static final long BUY_RETRY = 300_000;
     /** Bottles thrown in a row with the drill no better for it: it isn't taking. */
     private static final int REPAIR_DUD = 12;
     private static final int OFFHAND_BUTTON = 40;
     /** Eats until the hunger bar's this full. */
     private static final int FED = 18;
+    /** A block back this soon after it broke was put back by the server. */
+    private static final long COMEBACK_MS = 3000;
+    /** How far a new way has to go before it counts as one: past the lava along its edge. */
+    private static final int ONWARD = 6;
+    /** The most levels it mines up over a block that won't break. */
+    private static final int MAX_RISE = 4;
+    /** Mining up with no level gained (and nothing above broken) for this long isn't working. */
+    private static final long CLIMB_GIVE_UP = 8000;
+    /** Not mining up: {@link #climbTo}. */
+    private static final int NO_CLIMB = Integer.MIN_VALUE;
 
     /** The hotbar slot the drill was in when this started. */
     private int drillSlot = -1;
@@ -149,7 +195,9 @@ public class AutoMine extends Module {
     private final SliderSetting randomness = add(new SliderSetting("Randomness", 0.5, 0, 1, 0.05).percent());
     private final SliderSetting lavaRange = add(new SliderSetting("Lava check", 3, 1, 6, 1).format(v -> (int) v + " ahead"));
     private final BoolSetting goAround = add(new BoolSetting("Go round obstacles", true));
-    private final SliderSetting maxDetour = add(new SliderSetting("Max detour", 16, 4, 32, 1).format(v -> (int) v + " blocks"));
+    private final SliderSetting maxDetour = add(new SliderSetting("Detour range", 32, 8, 64, 1).format(v -> (int) v + " blocks"));
+    private final ModeSetting noWay = add(new ModeSetting("No way round", "Dig another way", List.of("Dig another way", "Stop")));
+    private final ModeSetting unbreakable = add(new ModeSetting("Unbreakable blocks", "Mine up", List.of("Mine up", "Go round")));
     private final BoolSetting stopWater = add(new BoolSetting("Stop at water", false));
     private final BoolSetting fillHoles = add(new BoolSetting("Fill holes", true));
     private final BoolSetting stopDrops = add(new BoolSetting("Stop at drops", true));
@@ -157,6 +205,13 @@ public class AutoMine extends Module {
     private final BoolSetting saveTool = add(new BoolSetting("Save tool", true));
     private final BoolSetting repairXp = add(new BoolSetting("Repair with XP", true));
     private final SliderSetting repairAt = add(new SliderSetting("Repair at", 0.2, 0.05, 0.9, 0.05).percent());
+    /** Out of bottles with the drill wanting mending: a stack bought off /ah, the cheapest under your price. */
+    private final BoolSetting buyXp = add(new BoolSetting("Buy XP from /ah", false));
+    private final SliderSetting xpMaxStack = add(new SliderSetting("XP max price a stack", 1_000_000, 64, 100_000_000, 1).logarithmic().format(SchematicBuilder::dollars));
+    /** The most it spends on bottles in one run. */
+    private final SliderSetting xpBudget = add(new SliderSetting("XP budget", 10_000_000, 1_000, 1_000_000_000, 1).logarithmic().format(SchematicBuilder::dollars));
+    /** Off to match DonutSMP's own "auction buy confirm" setting being off: a click on a listing buys it. */
+    private final BoolSetting ahConfirm = add(new BoolSetting("AH confirm screen", false));
     private final BoolSetting eat = add(new BoolSetting("Eat", true));
     private final SliderSetting eatAt = add(new SliderSetting("Eat at", 14, 1, 19, 1).format(v -> "hunger " + (int) v));
     private final ModeSetting mobs = add(new ModeSetting("Mobs", "Fight", List.of("Fight", "Stop", "Ignore")));
@@ -164,6 +219,8 @@ public class AutoMine extends Module {
     private final BoolSetting stopHurt = add(new BoolSetting("Stop on damage", false));
     private final SliderSetting leaveHealth = add(new SliderSetting("Leave at health", 6, 0, 19, 1).format(v -> v == 0 ? "Off" : (int) v + " HP"));
     private final SliderSetting leavePlayers = add(new SliderSetting("Leave near players", 32, 0, 128, 4).format(v -> v == 0 ? "Off" : (int) v + "m"));
+    /** A dropped connection or a restart doesn't end the run: back in, and on down the same tunnel. */
+    private final Resume resume = new Resume(this);
     private final BoolSetting stopSkeletons = add(new BoolSetting("Stop near skeletons", false));
     private final SliderSetting skeletonRange = add(new SliderSetting("Skeleton range", 16, 4, 48, 2).format(v -> (int) v + "m"));
     private final BoolSetting stopSpawners = add(new BoolSetting("Stop at skeleton spawners", true));
@@ -184,8 +241,18 @@ public class AutoMine extends Module {
     private BlockPos start;
     /** A block on the centre line of the stretch being dug. */
     private BlockPos line;
-    /** How long a sideways stretch is before it turns back onto the heading. */
+    /** How long the stretch being dug is before the next one, or 0 for on along the heading for good. */
     private int legLength;
+    /** The stretches of the way round still to come after this one. */
+    private final ArrayDeque<WayRound.Leg> route = new ArrayDeque<>();
+    /** Dug along earlier headings, before it had to dig on another way. */
+    private int doneBefore;
+    private BlockPos plannedFrom;
+    private int plannedHere;
+    /** Blocks it broke lately, and when, to tell one the server puts back. */
+    private final Map<BlockPos, Long> broke = new HashMap<>();
+    private long holdUntil;
+    private int cameBack;
     private BlockPos target;
     private long targetSince;
     private long blockedSince;
@@ -195,6 +262,8 @@ public class AutoMine extends Module {
     private long offLineSince;
     private boolean targetCleared;
     private Input steering = Input.EMPTY;
+    /** Backing out of water that got over your head. */
+    private boolean surfacing;
     private final java.util.Set<BlockPos> reportedSpawners = new java.util.HashSet<>();
     private float lastHealth;
 
@@ -228,10 +297,24 @@ public class AutoMine extends Module {
     private BlockPos filling;
     private long fillSince;
     private final Set<BlockPos> unfillable = new HashSet<>();
+    /** Gaps it won't bridge: no far side in sight, too few blocks, or a bridge that wasn't working. */
+    private final Set<BlockPos> unbridgeable = new HashSet<>();
+    /** Why the last gap wasn't bridged, for the stop message. */
+    private String noBridge;
     /** Blocks that wouldn't break: gone round like bedrock. */
     private final Set<BlockPos> avoid = new HashSet<>();
+    /** Mining up over a block that won't break: the level your feet are going up to, or NO_CLIMB. */
+    private int climbTo = NO_CLIMB;
+    /** The level your feet were at when last on the ground while mining up. */
+    private int climbFrom;
+    private long climbSince;
+    /** The block that's being mined up over, and the ones it's given up mining up over. */
+    private BlockPos climbOver;
+    private final Set<BlockPos> noClimb = new HashSet<>();
     private BlockPos fillFace;
     private boolean bridging;
+    /** When the bridge last grew (or was started). */
+    private long bridgePlaced;
     /** Where it's looking while bridging: 0 not set, 1 down past its feet, 2 at the edge's face. */
     private int bridgeAim;
     private int bridged;
@@ -242,6 +325,15 @@ public class AutoMine extends Module {
     private int repairDamage;
     private int idleThrows;
     private long noRepairUntil;
+    private final AuctionBuyer buyer = new AuctionBuyer();
+    /** What bottles have cost since it started, against the XP budget. */
+    private double xpSpent;
+    /** No buying bottles again before this: the last go came to nothing. */
+    private long noBuyUntil;
+    /** No free slot for the bottles: one junk stack gets thrown out, whatever Inventory full says. */
+    private boolean needRoom;
+    /** Throwing junk for that, and only till there's a slot free. */
+    private boolean dumpForRoom;
 
     public AutoMine() {
         super(Category.WORLD, "Auto Mine", "Digs a tunnel on its own: goes round lava, fights, eats and makes room");
@@ -276,7 +368,15 @@ public class AutoMine extends Module {
         toldShape = false;
         lastBreakAt = 0;
         advancedNow = 0;
+        doneBefore = 0;
+        route.clear();
+        plannedFrom = null;
+        broke.clear();
+        holdUntil = 0;
+        cameBack = 0;
         startedAt = System.currentTimeMillis();
+        resume.clear();
+        surfacing = false;
         busy = false;
         doing = null;
         eatSlot = -1;
@@ -287,6 +387,10 @@ public class AutoMine extends Module {
         ignoredMobs.clear();
         filling = null;
         unfillable.clear();
+        unbridgeable.clear();
+        climbTo = NO_CLIMB;
+        noClimb.clear();
+        noBridge = null;
         avoid.clear();
         fillFace = null;
         bridging = false;
@@ -294,6 +398,10 @@ public class AutoMine extends Module {
         repairing = false;
         offhandWas = -1;
         noRepairUntil = 0;
+        xpSpent = 0;
+        noBuyUntil = 0;
+        needRoom = false;
+        dumpForRoom = false;
     }
 
     @Override
@@ -301,6 +409,7 @@ public class AutoMine extends Module {
         if (eatSlot >= 0 && inGame()) stopEating(mc.player);
         if (repairing && inGame()) endRepair(mc.player);
         repairing = false;
+        buyer.cancel();
         bridging = false;
         eatSlot = -1;
         doing = null;
@@ -339,6 +448,8 @@ public class AutoMine extends Module {
     /** The crosshair's on the planned block, with the right tool, facing the right way. */
     private boolean wantsToMine() {
         if (!isEnabled() || target == null || mc.player == null) return false;
+        // Letting go for a moment: the server just put back a block it broke.
+        if (System.currentTimeMillis() < holdUntil) return false;
         if (!(mc.hitResult instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return false;
         if (!hit.getBlockPos().equals(target)) return false;
         // Not until the right tool's in hand: the drill for the face, a plain one for a block at your feet.
@@ -358,9 +469,14 @@ public class AutoMine extends Module {
             return;
         }
         if (owner != player) {
+            if (Rejoin.waiting(this)) {
+                rejoined(player);
+                return;
+            }
             stop("Stopped", "You died or changed worlds");
             return;
         }
+        resume.saw(player);
         if (axis == null) {
             axis = player.getDirection();
             heading = axis;
@@ -376,20 +492,22 @@ public class AutoMine extends Module {
         }
 
         if (leave(player)) return;
+        if (underWater(player)) return;
         String hazard = hazard(player);
         if (hazard != null) {
             stop("Stopped", hazard);
             return;
         }
         if (lookAfter(player)) return;
+        if (climb(player)) return;
 
         BlockPos base = base(player);
-        // The end of a sideways stretch round lava: on along the heading from here.
-        if (sideways() && legLeft(base) <= 0) {
-            turn(base, heading, 0);
+        // The end of a stretch of the way round: the next one, or on along the heading from here.
+        if (onLeg() && legLeft(base) <= 0) {
+            nextLeg(base);
             base = base(player);
         }
-        int advanced = (base.getX() - start.getX()) * heading.getStepX() + (base.getZ() - start.getZ()) * heading.getStepZ();
+        int advanced = doneBefore + progress(start, base, heading);
         advancedNow = Math.max(0, advanced);
         if (length.get() > 0 && advanced >= length.get()) {
             double seconds = Math.max(1, (System.currentTimeMillis() - startedAt) / 1000.0);
@@ -399,16 +517,17 @@ public class AutoMine extends Module {
 
         BlockPos lava = lavaAhead(base);
         if (lava != null) {
+            String what = mc.level.getFluidState(lava).is(FluidTags.LAVA) ? "Lava" : "Water";
             if (!goAround.get()) {
-                stop("Stopped", "Lava " + ahead(base, lava) + " at " + coords(lava));
+                stop("Stopped", what + " " + ahead(base, lava) + " at " + coords(lava));
                 return;
             }
-            if (!detour(base, lava, "Lava")) {
-                stop("Stopped", "Lava " + ahead(base, lava) + " at " + coords(lava) + ", with no way round within " + maxDetour.get().intValue() + " blocks");
+            if (!detour(base, lava, what)) {
+                stop("Stopped", what + " " + ahead(base, lava) + " at " + coords(lava) + ", with no way round within " + maxDetour.get().intValue() + " blocks");
                 return;
             }
             base = base(player);
-        } else if (goAround.get() && !sideways() && offset(base) != 0) {
+        } else if (goAround.get() && !onLeg() && offset(base) != 0) {
             // Past it: back onto the line you started on once the way there is clear.
             int offset = offset(base);
             Direction back = offset > 0 ? heading.getCounterClockWise() : heading.getClockWise();
@@ -426,6 +545,7 @@ public class AutoMine extends Module {
 
         BlockPos next = null;
         boolean walk = false;
+        noBridge = null;
         List<BlockPos> first = needed(base, 1);
         if (!first.isEmpty() && bridging) endBridge(player);
         if (bridging && bridge(player, base)) return;
@@ -434,7 +554,7 @@ public class AutoMine extends Module {
         } else if (solid(at(base, 1, 0, -1))) {
             walk = true;
             // Nothing past the end of a sideways stretch: the turn comes first.
-            if (!sideways() || legLeft(base) >= 2) next = pick(needed(base, 2));
+            if (!onLeg() || legLeft(base) >= 2) next = pick(needed(base, 2));
         } else if (fillHoles.get() && fill(player, at(base, 1, 0, -1))) {
             return;
         } else if (fillHoles.get() && bridge(player, base)) {
@@ -446,7 +566,7 @@ public class AutoMine extends Module {
         } else if (goAround.get() && detour(base, at(base, 1, 0, -1), "A drop")) {
             return;
         } else if (stopDrops.get()) {
-            stop("Stopped", "Drop ahead at " + coords(at(base, 1, 0, -1)) + (bridged >= MAX_BRIDGE ? ", too wide to bridge" : ""));
+            stop("Stopped", "Drop ahead at " + coords(at(base, 1, 0, -1)) + (noBridge != null ? ", " + noBridge : ""));
             return;
         } else {
             walk = true;
@@ -464,6 +584,7 @@ public class AutoMine extends Module {
         }
 
         if (next != null && mc.level.getBlockState(next).getDestroySpeed(mc.level, next) < 0) {
+            if (unbreakable.is("Mine up") && startClimb(player, base, next)) return;
             if (goAround.get() && detour(base, next, mc.level.getBlockState(next).getBlock().getName().getString())) return;
             stop("Stopped", "Unbreakable block at " + coords(next));
             return;
@@ -474,7 +595,11 @@ public class AutoMine extends Module {
         if (fallingAhead(base)) walk = false;
         boolean backOff = fallingOverhead(player);
 
-        if (target != null && mc.level.getBlockState(target).isAir()) targetCleared = true;
+        if (target != null && mc.level.getBlockState(target).isAir()) {
+            targetCleared = true;
+            broke.putIfAbsent(target.immutable(), System.currentTimeMillis());
+        }
+        cameBack();
         watchCut(player);
         retarget(player, base, next);
         int slot = target == null ? -1 : slotFor(target);
@@ -698,12 +823,37 @@ public class AutoMine extends Module {
         return null;
     }
 
-    /** Lava near anything this stretch is about to open up, or null. */
+    /** Lava or water near anything this stretch is about to open up, or null. */
     private BlockPos lavaAhead(BlockPos base) {
         int range = lavaRange.get().intValue();
         // A sideways stretch only goes so far: what's past its end is the next stretch's to check.
-        if (sideways()) return fluidIn(base, axis, 1, Math.min(range, legLeft(base) + reach()), FluidTags.LAVA);
-        return fluidIn(base, axis, 0, range, FluidTags.LAVA);
+        if (onLeg()) return danger(base, axis, 1, Math.min(range, legLeft(base) + reach()));
+        return danger(base, axis, 0, range);
+    }
+
+    /**
+     * Lava, or water, near slices {@code from} to {@code to}: whatever it mustn't open the tunnel up
+     * to. Water only from the next slice on, so a trickle round your feet is no reason to turn.
+     */
+    private BlockPos danger(BlockPos base, Direction dir, int from, int to) {
+        BlockPos lava = fluidIn(base, dir, from, to, FluidTags.LAVA);
+        return lava != null ? lava : fluidIn(base, dir, Math.max(from, 1), to, FluidTags.WATER);
+    }
+
+    /**
+     * Your head's under water: let go of the block and back out down the tunnel you dug (it's dry),
+     * swimming up as you go, until you can breathe. Then the water's ahead, and gets gone round.
+     */
+    private boolean underWater(LocalPlayer player) {
+        if (!player.isUnderWater()) {
+            surfacing = false;
+            return false;
+        }
+        if (!surfacing) Notify.send("Auto Mine", "Head under water: backing out", false, false, false);
+        surfacing = true;
+        target = null;
+        steering = new Input(false, true, false, false, true, false, false);
+        return true;
     }
 
     /**
@@ -730,44 +880,128 @@ public class AutoMine extends Module {
     }
 
     /**
-     * Finds the shortest way round lava ahead: a sideways stretch, then on along the heading from
-     * its end. Both get the check the lava check will give them once they're being dug, so a way
-     * found here is never turned back from straight away. Partway along a sideways stretch, going
-     * on along the heading from where you are counts too.
-     * @return false when there's no way round within Max detour
+     * Finds the way round something ahead (WayRound): the fewest blocks, in a few long stretches, to
+     * somewhere past it from where the tunnel can carry on along the heading. With no way round
+     * within Detour range it digs on another way instead, unless No way round says stop: off to
+     * whichever side has the shorter way, or else back alongside the tunnel it came down.
+     * @return false when it's stopping
      */
-    private boolean detour(BlockPos base, BlockPos lava, String what) {
+    private boolean detour(BlockPos base, BlockPos obstacle, String what) {
+        // Planned from this very spot a few times over: whatever it finds isn't getting it anywhere.
+        if (base.equals(plannedFrom)) {
+            if (++plannedHere > 3) return false;
+        } else {
+            plannedFrom = base.immutable();
+            plannedHere = 1;
+        }
         int range = lavaRange.get().intValue();
-        if (sideways() && fluidIn(base, heading, 0, range, FluidTags.LAVA) == null && passable(base, heading, 1, range)) {
-            turn(base, heading, 0);
+        int wide = maxDetour.get().intValue();
+        String where = what + " " + ahead(base, obstacle) + " at " + coords(obstacle);
+        WayRound planner = planner(base);
+        List<WayRound.Leg> way = planner.find(base, axis, heading, Math.max(1, progress(base, obstacle, heading) + 1), 0, range, wide);
+        if (way != null) {
+            Notify.send("Auto Mine", where + ", going round it " + firstWay(way, planner.blocks), false, false, false);
+            follow(base, way);
             return true;
         }
+        if (!noWay.is("Dig another way")) return false;
+
+        Direction left = heading.getCounterClockWise();
         Direction right = heading.getClockWise();
-        int offset = offset(base);
-        int lavaSide = (lava.getX() - base.getX()) * right.getStepX() + (lava.getZ() - base.getZ()) * right.getStepZ();
-        // Back toward the line you started on when that's as short, otherwise away from the lava.
-        boolean leftFirst = offset != 0 ? offset > 0 : lavaSide > 0;
-        Direction[] sides = leftFirst ? new Direction[] {right.getOpposite(), right} : new Direction[] {right, right.getOpposite()};
-        for (int s = 1; s <= maxDetour.get().intValue(); s++) {
-            for (Direction side : sides) {
-                if (!clearWay(base, side, s)) continue;
-                Notify.send("Auto Mine", what + " " + ahead(base, lava) + " at " + coords(lava) + ", going round it "
-                    + s + (s == 1 ? " block" : " blocks") + " to the " + (side == right ? "right" : "left"), false, false, false);
-                turn(base, side, s);
-                return true;
+        Direction dir = null;
+        int blocks = Integer.MAX_VALUE;
+        for (Direction side : new Direction[] {left, right}) {
+            List<WayRound.Leg> off = planner.find(base, axis, side, ONWARD, 0, range, wide);
+            if (off != null && planner.blocks < blocks) {
+                way = off;
+                dir = side;
+                blocks = planner.blocks;
             }
         }
-        return false;
+        if (way == null) {
+            // Back the way it came, alongside the old tunnel with a wall left between.
+            dir = heading.getOpposite();
+            way = planner.find(base, axis, dir, ONWARD, 2 * reach() + 1, range, wide);
+        }
+        if (way == null) return false;
+        Notify.send("Auto Mine", where + ", with no way past within " + wide + " blocks: digging on "
+            + (dir == left ? "to the left" : dir == right ? "to the right" : "back alongside the tunnel") + " from here", false, false, false);
+        newHeading(base, dir);
+        follow(base, way);
+        return true;
+    }
+
+    private WayRound planner(BlockPos base) {
+        int half = drill() ? half() : 0;
+        // The same rows the tunnel digs and the lava check looks at.
+        return new WayRound(mc.level, base.getY(), half, drill() ? half * 2 : 1, drill() ? Math.min(0, 1 - half) : 0,
+            drill() ? half * 2 + 1 : 2, avoid);
+    }
+
+    /** "to the left (34 blocks)": which way the way round goes off first, and how long it is. */
+    private String firstWay(List<WayRound.Leg> way, int blocks) {
+        Direction first = heading;
+        for (WayRound.Leg leg : way) {
+            if (leg.dir() != heading) {
+                first = leg.dir();
+                break;
+            }
+        }
+        String side = first == heading.getClockWise() ? "to the right" : first == heading.getCounterClockWise() ? "to the left"
+            : first == heading ? "straight on" : "backing out first";
+        return side + " (" + blocks + (blocks == 1 ? " block)" : " blocks)");
+    }
+
+    /** Digs the way round stretch by stretch, then on along the heading. */
+    private void follow(BlockPos base, List<WayRound.Leg> way) {
+        route.clear();
+        route.addAll(way);
+        nextLeg(base);
+    }
+
+    private void nextLeg(BlockPos base) {
+        WayRound.Leg leg = route.poll();
+        if (leg == null) turn(base, heading, 0);
+        else turn(base, leg.dir(), leg.length());
+    }
+
+    /** Digs on another way from here: what's dug so far still counts toward Length, and the new line starts here. */
+    private void newHeading(BlockPos base, Direction dir) {
+        doneBefore = advancedNow;
+        heading = dir;
+        start = base.immutable();
+    }
+
+    /** How far {@code to} is from {@code from} along {@code dir}. */
+    private static int progress(BlockPos from, BlockPos to, Direction dir) {
+        return (to.getX() - from.getX()) * dir.getStepX() + (to.getZ() - from.getZ()) * dir.getStepZ();
+    }
+
+    /**
+     * A block it broke that's back a moment later: the server said no. Let go of attack for a moment,
+     * the way you'd stop and click again, then start it afresh (MultiPlayerGameModeMixin).
+     */
+    private void cameBack() {
+        if (broke.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        broke.entrySet().removeIf(e -> {
+            if (now - e.getValue() > COMEBACK_MS) return true;
+            // Gravel or sand landing in the gap isn't the server saying no.
+            if (!solid(e.getKey()) || mc.level.getBlockState(e.getKey()).getBlock() instanceof FallingBlock) return false;
+            cameBack++;
+            holdUntil = now + 500 + random.nextInt(500);
+            return true;
+        });
     }
 
     /**
      * Whether going {@code s} blocks {@code side} from {@code base}, then on along the heading, keeps
-     * clear of lava, has floor to walk on, and has nothing in the way that won't break.
+     * clear of lava and water, has floor to walk on, and has nothing in the way that won't break.
      */
     private boolean clearWay(BlockPos base, Direction side, int s) {
         int range = lavaRange.get().intValue();
         BlockPos corner = base.relative(side, s);
-        return fluidIn(base, side, 1, s + reach(), FluidTags.LAVA) == null && fluidIn(corner, heading, 0, range, FluidTags.LAVA) == null
+        return danger(base, side, 1, s + reach()) == null && danger(corner, heading, 0, range) == null
             && passable(base, side, 1, s) && passable(corner, heading, 1, range);
     }
 
@@ -813,7 +1047,7 @@ public class AutoMine extends Module {
         }
         Notify.send("Auto Mine left", why, toast.get(), sound.get(), flash.get());
         setEnabled(false);
-        mc.getConnection().getConnection().disconnect(com.cyanite.client.system.Stealth.disconnectReason("Cyanite Auto Mine\n\n" + why));
+        Disconnects.leave("Cyanite Auto Mine\n\n" + why);
         return true;
     }
 
@@ -827,8 +1061,12 @@ public class AutoMine extends Module {
         if (mobs.is("Fight") && fight(player)) {
             if (eatSlot >= 0) stopEating(player);
             if (repairing) endRepair(player);
+            buyer.cancel();
             dumping = false;
+            dumpForRoom = false;
             now = "fighting";
+        } else if (buyXp(player)) {
+            now = "buying XP";
         } else if (eat(player)) {
             now = "eating";
         } else if (repair(player)) {
@@ -847,7 +1085,7 @@ public class AutoMine extends Module {
             offLineSince = 0;
             return true;
         }
-        if (busy && filling == null && !bridging) backToWork(player);
+        if (busy && filling == null && !bridging && climbTo == NO_CLIMB) backToWork(player);
         return false;
     }
 
@@ -1056,7 +1294,7 @@ public class AutoMine extends Module {
         Inventory inventory = player.getInventory();
         long now = System.currentTimeMillis();
         if (!dumping) {
-            if (!whenFull.is("Drop junk") || inventory.getFreeSlot() >= 0) {
+            if (!(whenFull.is("Drop junk") || needRoom) || inventory.getFreeSlot() >= 0) {
                 toldFull = false;
                 return false;
             }
@@ -1070,22 +1308,36 @@ public class AutoMine extends Module {
             }
             if (!roomBehind(base(player))) return false;
             dumping = true;
+            dumpForRoom = !whenFull.is("Drop junk");
             dumpNext = now + 250;
             lookingStraight = false;
             // A touch above level throws it furthest.
             aim.setTarget(player.getEyePosition().add(-axis.getStepX() * 8, 0.3, -axis.getStepZ() * 8));
         }
         steering = Input.EMPTY;
+        if (dumpForRoom && freeSlots(inventory) >= 2) {
+            dumping = false;
+            return false;
+        }
         if (now < dumpNext || aim.error() > 10) return true;
         int slot = junk(inventory);
         int menuSlot = slot < 0 ? -1 : menuSlot(slot);
         if (menuSlot < 0) {
             dumping = false;
+            dumpForRoom = false;
             return false;
         }
         mc.gameMode.handleInventoryMouseClick(player.containerMenu.containerId, menuSlot, 1, ClickType.THROW, player);
         dumpNext = now + 120 + random.nextInt(180);
         return true;
+    }
+
+    private static int freeSlots(Inventory inventory) {
+        int free = 0;
+        for (int slot = 0; slot < 36; slot++) {
+            if (inventory.getItem(slot).isEmpty()) free++;
+        }
+        return free;
     }
 
     /** A few blocks of open tunnel behind, for junk to land in well away from you. */
@@ -1173,14 +1425,36 @@ public class AutoMine extends Module {
             edge = gap;
             gap = at(base, 2, 0, -1);
         }
-        if (!mc.level.getBlockState(gap).canBeReplaced() || bridged >= MAX_BRIDGE) return endBridge(player);
+        if (!mc.level.getBlockState(gap).canBeReplaced() || unbridgeable.contains(gap)) return endBridge(player);
+        if (bridged >= MAX_BRIDGE) {
+            noBridge = "too wide to bridge";
+            unbridgeable.add(gap.immutable());
+            return endBridge(player);
+        }
         int slot = fillSlot(player);
-        if (slot < 0) return endBridge(player);
+        if (slot < 0) {
+            noBridge = "no blocks to bridge it";
+            return endBridge(player);
+        }
+        long now = System.currentTimeMillis();
         if (!bridging) {
+            // Only a bridge that gets somewhere: the far side in sight, and blocks enough to reach it.
+            int across = across(edge);
+            int blocks = fillBlocks(player.getInventory());
+            if (across < 0 || across > blocks) {
+                noBridge = across < 0 ? "too wide to bridge" : "only " + blocks + " blocks to bridge " + across;
+                unbridgeable.add(gap.immutable());
+                return endBridge(player);
+            }
             bridging = true;
             bridgeAim = 0;
+            bridgePlaced = now;
             lookingStraight = false;
             lookingAhead = false;
+        } else if (now - bridgePlaced > BRIDGE_GIVE_UP) {
+            noBridge = "the bridge wasn't getting anywhere";
+            unbridgeable.add(gap.immutable());
+            return endBridge(player);
         }
         busy = true;
         doing = "bridging";
@@ -1207,8 +1481,32 @@ public class AutoMine extends Module {
             && mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit).consumesAction()) {
             player.swing(InteractionHand.MAIN_HAND);
             bridged++;
+            bridgePlaced = now;
         }
         return true;
+    }
+
+    /**
+     * How many blocks a bridge needs from {@code edge} to floor again along the tunnel, or -1 if
+     * there's no floor within {@link #MAX_BRIDGE} (or something in the way that a block can't go in).
+     */
+    private int across(BlockPos edge) {
+        for (int k = 1; k <= MAX_BRIDGE + 1; k++) {
+            BlockPos floor = edge.relative(axis, k);
+            if (solid(floor)) return k - 1;
+            if (!mc.level.getBlockState(floor).canBeReplaced()) return -1;
+        }
+        return -1;
+    }
+
+    /** Floor blocks in the whole inventory. */
+    private static int fillBlocks(Inventory inventory) {
+        int count = 0;
+        for (int slot = 0; slot < 36; slot++) {
+            ItemStack stack = inventory.getItem(slot);
+            if (FILL.contains(stack.getItem())) count += stack.getCount();
+        }
+        return count;
     }
 
     /** Off the bridge: back to digging. Always false, for {@link #bridge}. */
@@ -1233,9 +1531,7 @@ public class AutoMine extends Module {
         long now = System.currentTimeMillis();
         ItemStack tool = drillSlot >= 0 ? inventory.getItem(drillSlot) : ItemStack.EMPTY;
         if (!repairing) {
-            if (!repairXp.get() || now < noRepairUntil || !tool.isDamageableItem() || tool.getDamageValue() == 0) return false;
-            if (!EnchantmentHelper.has(tool, EnchantmentEffectComponents.REPAIR_WITH_XP)) return false;
-            if (1 - (double) tool.getDamageValue() / tool.getMaxDamage() > repairAt.get()) return false;
+            if (!repairXp.get() || now < noRepairUntil || !wantsMending(tool)) return false;
             if (!player.getOffhandItem().is(Items.EXPERIENCE_BOTTLE) && bottles(inventory) < 0) return false;
             repairing = true;
             offhandWas = -1;
@@ -1286,6 +1582,70 @@ public class AutoMine extends Module {
             idleThrows++;
         }
         repairNext = now + 200 + random.nextInt(120);
+        return true;
+    }
+
+    /** A tool with Mending, worn down to the Repair at mark. */
+    private boolean wantsMending(ItemStack tool) {
+        return tool.isDamageableItem() && tool.getDamageValue() > 0 && EnchantmentHelper.has(tool, EnchantmentEffectComponents.REPAIR_WITH_XP)
+            && 1 - (double) tool.getDamageValue() / tool.getMaxDamage() <= repairAt.get();
+    }
+
+    /**
+     * The drill wants mending and there's not a Bottle o' Enchanting to do it with: a stack bought
+     * off /ah ({@link AuctionBuyer}), the cheapest under your price, and Repair with XP takes it
+     * from there. With no slot free, one junk stack gets thrown out first. A go that comes to
+     * nothing (none listed, none cheap enough) isn't tried again for five minutes, and once the
+     * XP budget's spent, not again this run. @return true while it's at it
+     */
+    private boolean buyXp(LocalPlayer player) {
+        long now = System.currentTimeMillis();
+        String what = AuctionBuyer.name(Items.EXPERIENCE_BOTTLE);
+        if (buyer.active()) {
+            steering = Input.EMPTY;
+            if (buyer.tick() == AuctionBuyer.Result.RUNNING) return true;
+            xpSpent += buyer.spent();
+            double cheapest = buyer.cheapestEach();
+            String price = buyer.full() ? "no room for them" : !Double.isNaN(cheapest)
+                ? "cheapest is " + SchematicBuilder.dollars(cheapest * XP_STACK) + " a stack, your max is " + SchematicBuilder.dollars(xpMaxStack.get())
+                : buyer.why().isEmpty() || buyer.why().startsWith("no ") ? "none listed" : buyer.why();
+            if (buyer.got() > 0) {
+                Notify.send("Auto Mine", "Bought " + buyer.got() + " " + what + " for " + SchematicBuilder.dollars(buyer.spent())
+                    + (buyer.why().isEmpty() ? "" : " (no more: " + price + ")"), false, false, false);
+            } else {
+                Notify.send("Auto Mine", "Not buying " + what + ": " + price, false, false, false);
+                noBuyUntil = now + BUY_RETRY;
+            }
+            return false;
+        }
+        needRoom = false;
+        if (!buyXp.get() || !repairXp.get() || repairing || now < noBuyUntil || now < noRepairUntil) return false;
+        Inventory inventory = player.getInventory();
+        ItemStack tool = drillSlot >= 0 ? inventory.getItem(drillSlot) : ItemStack.EMPTY;
+        if (!wantsMending(tool) || player.getOffhandItem().is(Items.EXPERIENCE_BOTTLE) || bottles(inventory) >= 0) return false;
+        double left = xpBudget.get() - xpSpent;
+        if (left < 1) {
+            Notify.send("Auto Mine", "Not buying " + what + ": the XP budget's spent", false, false, false);
+            noBuyUntil = Long.MAX_VALUE;
+            return false;
+        }
+        // A full inventory: junk out first, two slots of it, as whatever's lying at your feet takes the first.
+        if (freeSlots(inventory) < (dumpForRoom ? 2 : 1)) {
+            if (!dumpForRoom && junk(inventory) < 0) {
+                Notify.send("Auto Mine", "Not buying " + what + ": no room for them", false, false, false);
+                noBuyUntil = now + BUY_RETRY;
+            } else {
+                needRoom = true;
+            }
+            return false;
+        }
+        if (dumpForRoom) {
+            dumping = false;
+            dumpForRoom = false;
+        }
+        buyer.start(Items.EXPERIENCE_BOTTLE, XP_STACK, xpMaxStack.get() / XP_STACK, left, ahConfirm.get(), true);
+        target = null;
+        steering = Input.EMPTY;
         return true;
     }
 
@@ -1403,12 +1763,12 @@ public class AutoMine extends Module {
         targetSince = System.nanoTime();
     }
 
-    /** On a sideways stretch round lava. */
-    private boolean sideways() {
-        return axis != heading;
+    /** On a stretch of a way round (or back onto the line), which ends after legLength blocks. */
+    private boolean onLeg() {
+        return legLength > 0;
     }
 
-    /** How much of this sideways stretch is still to go. */
+    /** How much of this stretch is still to go. */
     private int legLeft(BlockPos base) {
         return legLength - ((base.getX() - line.getX()) * axis.getStepX() + (base.getZ() - line.getZ()) * axis.getStepZ());
     }
@@ -1514,9 +1874,158 @@ public class AutoMine extends Module {
             .add(side.getStepX() * u, v, side.getStepZ() * u);
     }
 
-    /** Which face to hit: the one looking down the tunnel. */
+    /** Which face to hit: the one looking down the tunnel, or the bottom of one above your head while mining up. */
     private Direction faceFor(BlockPos pos) {
+        if (climbTo != NO_CLIMB && mc.player != null && pos.getY() >= mc.player.getBlockY() + 2) return Direction.DOWN;
         return axis.getOpposite();
+    }
+
+    /**
+     * A block that won't break in the way: mines up over it, if it can, by the fewest levels that
+     * leave the next couple of slices clear of it. @return true if it's started
+     */
+    private boolean startClimb(LocalPlayer player, BlockPos base, BlockPos blocked) {
+        if (noClimb.contains(blocked)) return false;
+        int blocks = fillBlocks(player.getInventory());
+        for (int rise = Math.max(1, blocked.getY() - base.getY() + 1); rise <= MAX_RISE && rise <= blocks; rise++) {
+            if (!canClimb(base, rise)) continue;
+            climbTo = base.getY() + rise;
+            climbFrom = base.getY();
+            climbSince = System.currentTimeMillis();
+            climbOver = blocked.immutable();
+            bridging = false;
+            filling = null;
+            target = null;
+            Notify.send("Auto Mine", mc.level.getBlockState(blocked).getBlock().getName().getString() + " " + ahead(base, blocked) + " at "
+                + coords(blocked) + ": mining up " + rise + (rise == 1 ? " block" : " blocks") + " over it", false, false, false);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Whether it can go up {@code rise} levels right here and carry on: the column above you
+     * breaks, nothing in it or round it is lava or water, nothing above would fall in on you, and
+     * the next two slices at the new level are clear of anything that won't break.
+     */
+    private boolean canClimb(BlockPos base, int rise) {
+        int top = drill() ? half() * 2 : 1;
+        for (int y = 0; y <= rise + top + 1; y++) {
+            BlockPos pos = base.above(y);
+            BlockState state = mc.level.getBlockState(pos);
+            if (y >= 2 && y <= rise + 1 && state.getDestroySpeed(mc.level, pos) < 0) return false;
+            if (!state.getFluidState().isEmpty()) return false;
+            for (Direction side : Direction.Plane.HORIZONTAL) {
+                if (y >= 2 && !mc.level.getFluidState(pos.relative(side)).isEmpty()) return false;
+            }
+        }
+        for (int y = 2; y <= rise + 9; y++) {
+            if (mc.level.getBlockState(base.above(y)).getBlock() instanceof FallingBlock) return false;
+        }
+        for (int k = 1; k <= 2; k++) {
+            for (int y = rise; y <= rise + top; y++) {
+                BlockPos pos = at(base, k, 0, y);
+                if (mc.level.getBlockState(pos).getDestroySpeed(mc.level, pos) < 0) return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Mining up, one level a go: the block above your head comes out (you can't jump with it
+     * there), then crouched, looking straight down and right in the middle of the column, it jumps
+     * and puts a block under your feet at the top of the jump. Off the middle your head catches
+     * the ceiling of the block next door; crouched there's more room over it. @return true while
+     * it's at it
+     */
+    private boolean climb(LocalPlayer player) {
+        if (climbTo == NO_CLIMB) return false;
+        long now = System.currentTimeMillis();
+        BlockPos base = base(player);
+        if (player.onGround()) {
+            if (player.getBlockY() > climbFrom) climbSince = now;
+            climbFrom = player.getBlockY();
+            if (climbFrom >= climbTo) {
+                endClimb(player);
+                return false;
+            }
+        }
+        if (now - climbSince > CLIMB_GIVE_UP) {
+            noClimb.add(climbOver);
+            endClimb(player);
+            return false;
+        }
+        busy = true;
+        doing = "mining up";
+        BlockPos column = new BlockPos(base.getX(), climbFrom, base.getZ());
+
+        // Headroom first: with a block right over your head there's no jumping.
+        BlockPos above = column.above(2);
+        if (!mc.level.getBlockState(above).canBeReplaced()) {
+            if (!above.equals(target)) {
+                target = above;
+                aim.setTarget(Vec3.atCenterOf(above).add(axis.getStepX() * 0.25, -0.45, axis.getStepZ() * 0.25));
+            }
+            // The pick back in hand (a strip mine leaves it to you): the blocks from the last level are still in it.
+            int slot = slotFor(above);
+            if (slot < 0) slot = drillSlot;
+            if (slot >= 0 && player.getInventory().getSelectedSlot() != slot) player.getInventory().setSelectedSlot(slot);
+            steering = Input.EMPTY;
+            return true;
+        }
+        if (target != null) {
+            // It just went.
+            target = null;
+            climbSince = now;
+        }
+
+        int slot = fillSlot(player);
+        if (slot < 0) {
+            noClimb.add(climbOver);
+            endClimb(player);
+            return false;
+        }
+        if (player.getInventory().getSelectedSlot() != slot) player.getInventory().setSelectedSlot(slot);
+        BlockPos floor = column.below();
+        // A little ahead of straight down (and up, above): right overhead the way you face is anyone's guess.
+        aim.track(Vec3.atCenterOf(floor).add(axis.getStepX() * 0.25, 0.5, axis.getStepZ() * 0.25));
+        if (player.onGround()) {
+            // Over the middle of the column, still, and looking down at it: then jump.
+            boolean[] keys = toward(player, column);
+            boolean still = player.getDeltaMovement().horizontalDistanceSqr() < 0.0004;
+            boolean ready = !keys[0] && !keys[1] && !keys[2] && !keys[3] && still && aim.error() < 4;
+            steering = new Input(keys[0], keys[1], keys[2], keys[3], ready, true, false);
+        } else {
+            steering = new Input(false, false, false, false, false, true, false);
+            // High enough that the block won't go in where you are: put it in under you.
+            if (player.getY() >= climbFrom + 1 && mc.hitResult instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK
+                && hit.getBlockPos().equals(floor) && hit.getDirection() == Direction.UP
+                && mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit).consumesAction()) {
+                player.swing(InteractionHand.MAIN_HAND);
+            }
+        }
+        return true;
+    }
+
+    /** Forward, back, left and right toward the middle of {@code column}: none once you're within 0.15 of it both ways. */
+    private boolean[] toward(LocalPlayer player, BlockPos column) {
+        double dx = column.getX() + 0.5 - player.getX();
+        double dz = column.getZ() + 0.5 - player.getZ();
+        if (Math.abs(dx) <= 0.15 && Math.abs(dz) <= 0.15) return new boolean[4];
+        double length = Math.sqrt(dx * dx + dz * dz);
+        double yaw = Math.toRadians(player.getYRot());
+        double ahead = (-dx * Math.sin(yaw) + dz * Math.cos(yaw)) / length;
+        double left = (dx * Math.cos(yaw) + dz * Math.sin(yaw)) / length;
+        return new boolean[] {ahead > 0.4, ahead < -0.4, left > 0.4, left < -0.4};
+    }
+
+    /** Up (or given up): back to digging, from whatever level you're on. */
+    private void endClimb(LocalPlayer player) {
+        climbTo = NO_CLIMB;
+        climbOver = null;
+        target = null;
+        steering = Input.EMPTY;
+        backToWork(player);
     }
 
     /**
@@ -1561,6 +2070,90 @@ public class AutoMine extends Module {
             }
         }
         return false;
+    }
+
+    // ---- Back after a dropped connection (Rejoin)
+
+    @Override
+    public boolean wantsRejoin() {
+        return resume.on() && owner != null && axis != null;
+    }
+
+    @Override
+    public boolean rejoinUnknown() {
+        return resume.unknown();
+    }
+
+    @Override
+    public int rejoinTries() {
+        return resume.tries();
+    }
+
+    @Override
+    public long rejoinDelay() {
+        return resume.delay();
+    }
+
+    @Override
+    public void rejoinEnded(String why) {
+        stop("Stopped", why);
+    }
+
+    /** Back on the server after a rejoin: on down the same tunnel once it's where it left and the world's in round it. */
+    private void rejoined(LocalPlayer player) {
+        steering = Input.EMPTY;
+        target = null;
+        // Hands off the camera till it carries on: the old target may be nowhere near (a lobby on the way in).
+        aim.clear();
+        switch (resume.back(player)) {
+            case HERE -> resume(player);
+            case LOST -> stop("Stopped", resume.lostWhy(player));
+            default -> {
+            }
+        }
+    }
+
+    /**
+     * Picks up with the new player. The tunnel, its heading and any way round stay as they were;
+     * what was half done (a hit, a fight, a fill, eating) starts over, and the time it was gone
+     * doesn't count against the give-up timers or the blocks-a-second.
+     */
+    private void resume(LocalPlayer player) {
+        String why = Rejoin.why();
+        Rejoin.back();
+        long now = System.currentTimeMillis();
+        startedAt += resume.gone(now);
+        if (eatSlot >= 0) stopEating(player);
+        owner = player;
+        target = null;
+        targetCleared = false;
+        targetSince = System.nanoTime();
+        blockedSince = 0;
+        offLineSince = 0;
+        lookingAhead = false;
+        lookingStraight = false;
+        aim.clear();
+        holdUntil = 0;
+        broke.clear();
+        cameBack = 0;
+        beforeAt = null;
+        before = null;
+        watching = null;
+        lastBreakAt = 0;
+        surfacing = false;
+        busy = false;
+        doing = null;
+        dumping = false;
+        fighting = null;
+        ignoredMobs.clear();
+        filling = null;
+        fillFace = null;
+        bridgeAim = 0;
+        bridgePlaced = now;
+        climbSince = now;
+        buyer.cancel();
+        lastHealth = player.getHealth();
+        Notify.send("Auto Mine back", "Rejoined after: " + Disconnects.brief(why, 56), toast.get(), false, false);
     }
 
     private void stop(String title, String reason) {
@@ -1616,10 +2209,14 @@ public class AutoMine extends Module {
         BlockPos base = base(mc.player);
         int left = length.get() > 0 ? Math.max(0, length.get().intValue() - advancedNow) : 24;
         BlockPos from = base;
-        if (sideways()) {
+        if (onLeg()) {
             int rest = Math.max(0, legLeft(base));
             stretch(render, base, axis, rest, rest);
             from = base.relative(axis, rest);
+            for (WayRound.Leg leg : route) {
+                stretch(render, from, leg.dir(), leg.length(), leg.length());
+                from = from.relative(leg.dir(), leg.length());
+            }
         }
         stretch(render, from, heading, Math.min(left, 24), left);
         if (target != null) render.box(new AABB(target).inflate(0.01), 0x28FFFFFF, 0xC0FFFFFF, 1.5f, false);

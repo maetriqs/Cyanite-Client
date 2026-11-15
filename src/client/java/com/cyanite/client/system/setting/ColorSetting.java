@@ -9,8 +9,40 @@ public class ColorSetting extends Setting<Integer> {
         super(name, rgb & 0xFFFFFF);
     }
 
+    private boolean full;
+
+    /** Shown with saturation and brightness bars under the hue, so any colour can be picked. */
+    public ColorSetting full() {
+        full = true;
+        return this;
+    }
+
+    public boolean isFull() {
+        return full;
+    }
+
     public float hue() {
         return hsv(value)[0];
+    }
+
+    public float saturation() {
+        return hsv(value)[1];
+    }
+
+    public float brightness() {
+        return hsv(value)[2];
+    }
+
+    /** Keeps hue and brightness. */
+    public void setSaturation(float s) {
+        float[] hsv = hsv(value);
+        set(fromHsv(hsv[0], Math.max(0, Math.min(1, s)), hsv[2]));
+    }
+
+    /** Keeps hue and saturation. */
+    public void setBrightness(float v) {
+        float[] hsv = hsv(value);
+        set(fromHsv(hsv[0], hsv[1], Math.max(0, Math.min(1, v))));
     }
 
     /** Changes the hue but keeps saturation and brightness, unless the colour is grey. */

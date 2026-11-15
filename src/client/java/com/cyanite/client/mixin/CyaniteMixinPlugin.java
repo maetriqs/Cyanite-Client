@@ -12,7 +12,10 @@ import java.util.Set;
 public class CyaniteMixinPlugin implements IMixinConfigPlugin {
     private static final Set<String> VANILLA_TERRAIN_ONLY = Set.of(
         "com.cyanite.client.mixin.VanillaTerrainMixin",
-        "com.cyanite.client.mixin.SectionOcclusionGraphMixin");
+        "com.cyanite.client.mixin.SectionOcclusionGraphMixin",
+        "com.cyanite.client.mixin.SectionTreeMixin",
+        "com.cyanite.client.mixin.RenderSectionMixin",
+        "com.cyanite.client.mixin.ViewAreaAccessor");
 
     private boolean sodium;
 

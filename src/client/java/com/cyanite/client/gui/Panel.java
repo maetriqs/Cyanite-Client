@@ -34,7 +34,7 @@ final class Panel {
         Render2D.rect(g, px, py, pw, ph, r, Theme.fade(Theme.mix(Theme.BORDER, accent, focus * 0.3f), alpha));
         Render2D.rect(g, px + 1, py + 1, pw - 2, ph - 2, ir, Theme.fade(Theme.BODY, alpha));
 
-        int headerColor = Theme.fade(Theme.mix(Theme.HEADER, Theme.HEADER_HOVER, headerHover), alpha);
+        int headerColor = Theme.fade(Theme.mix(Theme.mix(Theme.HEADER, Theme.HEADER_HOVER, headerHover), accent, 0.07f + 0.05f * focus), alpha);
         if (body * s <= r) {
             Render2D.rect(g, px + 1, py + 1, pw - 2, ph - 2, ir, headerColor);
         } else {
@@ -43,9 +43,10 @@ final class Panel {
             g.fill(px + 1, py + hh, px + pw - 1, py + hh + r, Theme.fade(Theme.BODY, alpha));
 
             int thickness = Math.max(1, s / 2);
-            Render2D.fadeRight(g, px + 1, py + hh - thickness, pw - 2, thickness, Theme.alpha(accent, 230 * line * alpha));
-            Render2D.glow(g, px + 4 * s, py + hh - thickness, pw / 2, thickness, 0, 5 * s,
-                Theme.alpha(accent, 70 * glow * line * alpha));
+            int lineW = Math.round((pw - 2) * line);
+            g.fill(px + 1, py + hh - thickness, px + 1 + lineW, py + hh, Theme.alpha(accent, (150 + 80 * focus) * alpha));
+            Render2D.glow(g, px + 1, py + hh - thickness, lineW, thickness, 0, 4 * s,
+                Theme.alpha(accent, (40 + 40 * focus) * glow * alpha));
         }
 
         Render2D.end(g);

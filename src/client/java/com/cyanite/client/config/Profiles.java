@@ -36,7 +36,7 @@ public final class Profiles {
     private static final int MAX_SHARED = 1 << 20;
 
     private static final Logger LOGGER = LogUtils.getLogger();
-    private static final String EXT = ".json";
+    static final String EXT = ".json";
     private static final String BUNDLED = "/assets/cyanite_client/profiles/";
     private static final String DEFAULTS_FILE = ".installed-defaults";
 
@@ -214,7 +214,7 @@ public final class Profiles {
     }
 
     /** The name, or the same with the first number after it that isn't taken. */
-    private static String freeName(String wanted) {
+    static String freeName(String wanted) {
         String base = wanted.isEmpty() ? "Shared" : wanted;
         if (!Files.exists(dir().resolve(base + EXT))) return base;
         for (int n = 2; ; n++) {

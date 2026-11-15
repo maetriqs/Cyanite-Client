@@ -1,10 +1,12 @@
 package com.cyanite.client.modules.render;
 
+import com.cyanite.client.render.CameraShot;
 import com.cyanite.client.system.Category;
 import com.cyanite.client.system.Culling;
 import com.cyanite.client.system.Module;
 import com.cyanite.client.system.Modules;
 import com.cyanite.client.system.setting.SliderSetting;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 
@@ -24,6 +26,8 @@ public class Freecam extends Module {
     private Vec3 previous;
     private float yaw;
     private float pitch;
+    /** The world the camera's flying in: in another (a portal, a server switch) it starts at you again. */
+    private ClientLevel level;
 
     public Freecam() {
         super(Category.RENDER, "Freecam", "Fly the camera around without moving");
@@ -39,6 +43,7 @@ public class Freecam extends Module {
         position = previous = mc.gameRenderer.getMainCamera().position();
         yaw = mc.player.getYRot();
         pitch = mc.player.getXRot();
+        level = mc.level;
         // Occlusion culling guesses what the camera can see from inside the world; a camera flying
         // through walls breaks that guess and chunks blink out.
         Culling.hold(this);
@@ -47,17 +52,19 @@ public class Freecam extends Module {
     @Override
     protected void onDisable() {
         position = previous = null;
+        level = null;
         Culling.release(this);
     }
 
     /**
      * Where chunk rendering should be centred: your player, not the camera. Chunks are loaded
      * around the player, so centring on them keeps every loaded chunk drawable however far the
-     * camera flies. Null when Freecam is off.
+     * camera flies. Null when Freecam is off and no CameraShot is being drawn.
      */
     public static Vec3 renderCentre() {
+        if (mc.player == null) return null;
         Freecam freecam = Modules.get(Freecam.class);
-        if (freecam == null || !freecam.isActive() || mc.player == null) return null;
+        if ((freecam == null || !freecam.isActive()) && !CameraShot.taking()) return null;
         return mc.player.getEyePosition();
     }
 
@@ -70,6 +77,11 @@ public class Freecam extends Module {
     @Override
     public void onTick() {
         if (position == null) onEnable();
+        // The old spot means nothing in a new world: its chunks aren't there, so the camera would sit in the void.
+        if (mc.level != level) {
+            position = mc.player.getEyePosition();
+            level = mc.level;
+        }
         previous = position;
 
         double forward = (mc.options.keyUp.isDown() ? 1 : 0) - (mc.options.keyDown.isDown() ? 1 : 0);

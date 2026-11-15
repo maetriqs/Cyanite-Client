@@ -5,7 +5,7 @@ import com.cyanite.client.modules.combat.AntiBot;
 import com.cyanite.client.system.Category;
 import com.cyanite.client.system.Module;
 import com.cyanite.client.system.Notify;
-import com.cyanite.client.system.Stealth;
+import com.cyanite.client.system.Webhook;
 import com.cyanite.client.system.setting.BoolSetting;
 import com.cyanite.client.system.setting.ModeSetting;
 import com.cyanite.client.system.setting.SliderSetting;
@@ -13,7 +13,6 @@ import com.cyanite.client.system.setting.StringSetting;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mojang.logging.LogUtils;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.multiplayer.PlayerInfo;
@@ -21,17 +20,9 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.player.Player;
 import org.slf4j.Logger;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -50,10 +41,8 @@ import java.util.regex.Pattern;
  */
 public class BaseGuard extends Module {
     private static final Logger LOGGER = LogUtils.getLogger();
-    private static final Pattern WEBHOOK = Pattern.compile("https://(?:\\w+\\.)?discord(?:app)?\\.com/api/webhooks/\\d+/[\\w-]+");
     private static final Pattern ID = Pattern.compile("\\d{15,21}");
     private static final int ALERT_COLOR = 0xFF4D57;
-    private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
 
     private final StringSetting webhook = add(new StringSetting("Webhook", "", 200).placeholder("paste a Discord webhook URL").secret());
     private final ModeSetting ping = add(new ModeSetting("Ping", "@everyone", List.of("Nobody", "@everyone", "@here", "User", "Role")));
@@ -105,9 +94,7 @@ public class BaseGuard extends Module {
     }
 
     private static boolean validWebhook(String url) {
-        if (WEBHOOK.matcher(url).matches()) return true;
-        // Lets the tests aim it at a stand-in for Discord on this machine; never outside the dev environment.
-        return FabricLoader.getInstance().isDevelopmentEnvironment() && url.startsWith("http://127.0.0.1:");
+        return Webhook.valid(url);
     }
 
     @Override
@@ -148,7 +135,7 @@ public class BaseGuard extends Module {
             if (hasWebhook) alert(fresh, seen);
         }
         if (logOut.get() && mc.getConnection() != null) {
-            mc.getConnection().getConnection().disconnect(Stealth.disconnectReason("Cyanite Base Guard\n\n" + names + " came near"));
+            com.cyanite.client.system.Disconnects.leave("Cyanite Base Guard\n\n" + names + " came near");
         }
     }
 
@@ -188,7 +175,7 @@ public class BaseGuard extends Module {
         }
         fields.add(new String[] {"You", logOut.get() ? "Logged out" : "Still online"});
         String title = fresh.size() == 1 ? fresh.get(0).getGameProfile().name() + " is at your base" : fresh.size() + " players are at your base";
-        JsonObject message = embed(title, null, ALERT_COLOR, fields);
+        JsonObject embed = embed(title, null, ALERT_COLOR, fields);
         if (screenshot.get()) {
             // A copy of the screen as it was, taken before logging out changes it.
             Screenshot.takeScreenshot(mc.getMainRenderTarget(), image -> {
@@ -208,13 +195,13 @@ public class BaseGuard extends Module {
                             // Gone next time.
                         }
                     }
-                    send(message, png, false);
+                    send(embed, png, false);
                 }, "Cyanite Base Guard");
                 t.setDaemon(true);
                 t.start();
             });
         } else {
-            send(message, null, false);
+            send(embed, null, false);
         }
     }
 
@@ -224,35 +211,11 @@ public class BaseGuard extends Module {
     }
 
     private JsonObject embed(String title, String description, int color, List<String[]> fields) {
-        JsonObject embed = new JsonObject();
-        embed.addProperty("title", title);
-        if (description != null) embed.addProperty("description", description);
-        embed.addProperty("color", color);
-        JsonArray list = new JsonArray();
-        for (String[] f : fields) {
-            JsonObject field = new JsonObject();
-            field.addProperty("name", f[0]);
-            field.addProperty("value", f[1].isEmpty() ? "-" : f[1]);
-            field.addProperty("inline", false);
-            list.add(field);
-        }
-        if (!list.isEmpty()) embed.add("fields", list);
-        JsonObject footer = new JsonObject();
-        footer.addProperty("text", "Cyanite Base Guard");
-        embed.add("footer", footer);
-        embed.addProperty("timestamp", Instant.now().toString());
-
-        JsonObject message = new JsonObject();
-        message.addProperty("username", "Base Guard");
-        JsonArray embeds = new JsonArray();
-        embeds.add(embed);
-        message.add("embeds", embeds);
-        return message;
+        return Webhook.embed(title, description, color, fields, "Cyanite Base Guard");
     }
 
     /** Adds the ping and posts it, off the game's thread. A test message never pings. */
-    private void send(JsonObject message, byte[] png, boolean isTest) {
-        String url = webhook.get().strip();
+    private void send(JsonObject embed, byte[] png, boolean isTest) {
         JsonObject allowed = new JsonObject();
         JsonArray parse = new JsonArray();
         String content = "";
@@ -284,52 +247,15 @@ public class BaseGuard extends Module {
             }
         }
         allowed.add("parse", parse);
-        message.addProperty("content", content);
-        message.add("allowed_mentions", allowed);
 
-        Thread t = new Thread(() -> {
-            try {
-                HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url))
-                    .header("User-Agent", "Cyanite-Client (Base Guard)")
-                    .timeout(Duration.ofSeconds(20));
-                if (png == null) {
-                    request.header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(message.toString(), StandardCharsets.UTF_8));
-                } else {
-                    JsonArray embeds = message.getAsJsonArray("embeds");
-                    JsonObject image = new JsonObject();
-                    image.addProperty("url", "attachment://base-guard.png");
-                    embeds.get(0).getAsJsonObject().add("image", image);
-                    String boundary = "cyanite" + UUID.randomUUID().toString().replace("-", "");
-                    ByteArrayOutputStream body = new ByteArrayOutputStream();
-                    body.writeBytes(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"payload_json\"\r\nContent-Type: application/json\r\n\r\n").getBytes(StandardCharsets.UTF_8));
-                    body.writeBytes(message.toString().getBytes(StandardCharsets.UTF_8));
-                    body.writeBytes(("\r\n--" + boundary + "\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"base-guard.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));
-                    body.writeBytes(png);
-                    body.writeBytes(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
-                    request.header("Content-Type", "multipart/form-data; boundary=" + boundary)
-                        .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()));
-                }
-                HttpResponse<String> response = HTTP.send(request.build(), HttpResponse.BodyHandlers.ofString());
-                int code = response.statusCode();
-                if (code / 100 != 2) {
-                    LOGGER.warn("Base Guard: Discord answered {}: {}", code, response.body());
-                    tell(code == 404 || code == 401 ? "That webhook doesn't work any more (it was deleted?)" : "Discord didn't take the message (" + code + ")");
-                } else if (isTest) {
-                    tell("Test message sent. Check the channel.");
-                }
-            } catch (IOException | InterruptedException | IllegalArgumentException e) {
-                LOGGER.warn("Base Guard: couldn't reach Discord", e);
-                tell("Couldn't reach Discord: " + e.getMessage());
-            }
-        }, "Cyanite Base Guard");
-        t.setDaemon(true);
-        t.start();
-    }
-
-    private void tell(String text) {
-        mc.execute(() -> {
-            if (mc.player != null) Notify.send("Base Guard", text, true, false, false);
-        });
+        List<Webhook.File> files = new ArrayList<>();
+        if (png != null) {
+            JsonObject image = new JsonObject();
+            image.addProperty("url", "attachment://base-guard.png");
+            embed.add("image", image);
+            files.add(new Webhook.File("base-guard.png", png));
+        }
+        Webhook.post("Base Guard", webhook.get().strip(), Webhook.message("Base Guard", content, allowed, List.of(embed)), files,
+            isTest ? "Test message sent. Check the channel." : null);
     }
 }

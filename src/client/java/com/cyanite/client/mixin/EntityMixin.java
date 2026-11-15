@@ -25,16 +25,16 @@ public class EntityMixin {
         if (extra > 0) cir.setReturnValue(cir.getReturnValue() + extra);
     }
 
-    // Zoom: your mouse turns slow down with the zoom, so a flick covers the same ground in view.
+    // Zoom (and Cinematic's zoom): your mouse turns slow down with the zoom, so a flick covers the same ground in view.
     // Turns from a module aiming for you (HumanAim) are left alone.
     @ModifyVariable(method = "turn", at = @At("HEAD"), argsOnly = true, ordinal = 0)
     private double cyanite$zoomYaw(double yRot) {
-        return zoomed() ? yRot * com.cyanite.client.modules.render.Zoom.turnScale() : yRot;
+        return zoomed() ? yRot * com.cyanite.client.modules.render.Zoom.turnScale() * com.cyanite.client.modules.render.Cinematic.turnScale() : yRot;
     }
 
     @ModifyVariable(method = "turn", at = @At("HEAD"), argsOnly = true, ordinal = 1)
     private double cyanite$zoomPitch(double xRot) {
-        return zoomed() ? xRot * com.cyanite.client.modules.render.Zoom.turnScale() : xRot;
+        return zoomed() ? xRot * com.cyanite.client.modules.render.Zoom.turnScale() * com.cyanite.client.modules.render.Cinematic.turnScale() : xRot;
     }
 
     private boolean zoomed() {

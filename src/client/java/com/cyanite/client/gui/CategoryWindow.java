@@ -9,6 +9,8 @@ import com.cyanite.client.system.setting.Setting;
 import com.google.gson.JsonObject;
 import com.mojang.blaze3d.platform.cursor.CursorTypes;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
@@ -20,7 +22,8 @@ import java.util.Map;
  * One draggable, collapsible panel per category. Left click a module to toggle it,
  * right click to open its settings. Positions and sizes are in GUI units. While the menu's
  * search has something in it, each window shows only the modules that match, and windows
- * with none fold away and fade.
+ * with none fold away and fade. Each window carries its category's item in the header, the way
+ * Meteor's do; a module's row shows its key when it has one, and its arrow only under the mouse.
  */
 public class CategoryWindow {
     public static final int WIDTH = 124;
@@ -31,8 +34,11 @@ public class CategoryWindow {
     private static final int INLINE_MAX = 140;
     private static final int PREVIEW_HEIGHT = 90;
     private static final int MORE_ROW = 14;
+    /** The header's item, in UI units. */
+    private static final int ICON = 10;
 
     public final Category category;
+    private final ItemStack icon;
     public int x;
     public int y;
 
@@ -63,6 +69,15 @@ public class CategoryWindow {
 
     public CategoryWindow(Category category) {
         this.category = category;
+        this.icon = new ItemStack(switch (category) {
+            case COMBAT -> Items.DIAMOND_SWORD;
+            case MOVEMENT -> Items.DIAMOND_BOOTS;
+            case RENDER -> Items.GLASS;
+            case PLAYER -> Items.ARMOR_STAND;
+            case WORLD -> Items.GRASS_BLOCK;
+            case MISC -> Items.LAVA_BUCKET;
+            case DONUT -> Items.CAKE;
+        });
     }
 
     private Row row(Module module) {
@@ -183,8 +198,16 @@ public class CategoryWindow {
             Theme.fade(Theme.mix(Theme.TEXT_DIM, Theme.TEXT, headerHover), alpha));
         Render2D.end(g);
 
+        // Items can't fade, so it waits until the window is most of the way in.
+        if (alpha > 0.5f) {
+            g.pose().pushMatrix();
+            g.pose().translate(x + 5, y + (HEADER - ICON) / 2f);
+            g.pose().scale(ICON / 16f);
+            g.renderItem(icon, 0, 0);
+            g.pose().popMatrix();
+        }
         int textY = y + (HEADER - Text.CAP) / 2;
-        Text.draw(g, category.title, x + 8, textY, Theme.fade(Theme.TEXT, alpha));
+        Text.draw(g, category.title, x + 9 + ICON, textY, Theme.fade(Theme.TEXT, alpha));
 
         int active = 0;
         for (Module module : Modules.get(category)) {
@@ -192,7 +215,13 @@ public class CategoryWindow {
         }
         if (active > 0) {
             String count = Integer.toString(active);
-            Text.draw(g, count, x + WIDTH - 18 - Text.width(count), textY, Theme.fade(Theme.accentText(), alpha));
+            int pillW = Math.max(Widgets.CAP_H, Text.width(count) + 6);
+            int pillX = x + WIDTH - 18 - pillW;
+            int pillY = y + (HEADER - Widgets.CAP_H) / 2;
+            Render2D.pixels(g);
+            Render2D.rect(g, pillX * s, pillY * s, pillW * s, Widgets.CAP_H * s, Widgets.CAP_H * s / 2, Theme.alpha(Theme.accent(), 70 * alpha));
+            Render2D.end(g);
+            Text.draw(g, count, pillX + (pillW - Text.width(count) + 1) / 2, textY, Theme.fade(Theme.accentText(), alpha));
         }
 
         if (body > 0) renderBody(g, mouseX, mouseY, dt, alpha, hovered, body);
@@ -321,12 +350,21 @@ public class CategoryWindow {
                 2 * s, 6 * s, Theme.alpha(accent, row.on * 45 * glow * alpha));
         }
 
-        if (!row.settings.isEmpty() || row.hidden > 0) {
+        float arrow = !row.settings.isEmpty() || row.hidden > 0 ? Math.max(row.hover, row.expand) : 0;
+        if (arrow > 0.01f) {
             float angle = (float) (-Math.PI / 2) * (1 - row.expand);
             Render2D.chevron(g, (x + WIDTH - 10) * s, ry + rh / 2, angle,
-                Theme.fade(Theme.mix(Theme.TEXT_FAINT, Theme.TEXT_DIM, Math.max(row.hover, row.expand)), alpha));
+                Theme.fade(Theme.mix(Theme.TEXT_FAINT, Theme.TEXT_DIM, arrow), alpha * arrow));
         }
         Render2D.end(g);
+
+        ModuleSearch.Hit hit = hits.get(module);
+        int right = x + WIDTH - 16;
+        if (hit == null && module.bind().isBound()) {
+            int keyColor = Theme.mix(Theme.TEXT_DIM, Theme.accentText(), row.on * 0.7f);
+            right -= Widgets.keycap(g, right, rowY + ROW / 2, module.bind().display(), keyColor, alpha) + 4;
+        }
+        String name = fit(module.name, right - textX - Math.round(row.on * 2));
 
         int color = risky
             ? Theme.mix(Theme.mix(0xFFC2585C, Theme.DANGER, row.hover * 0.7f), 0xFFFF9A9D, row.on)
@@ -334,11 +372,18 @@ public class CategoryWindow {
 
         g.pose().pushMatrix();
         g.pose().translate(nudge / (float) s, 0);
-        Text.draw(g, module.name, textX, textY, Theme.fade(color, alpha));
+        Text.draw(g, name, textX, textY, Theme.fade(color, alpha));
         g.pose().popMatrix();
 
-        ModuleSearch.Hit hit = hits.get(module);
         if (hit != null) drawWhy(g, module, hit, textX * s + nudge, textY, alpha);
+    }
+
+    /** {@code text}, cut short with an ellipsis if it's wider than {@code maxWidth}. */
+    private static String fit(String text, int maxWidth) {
+        if (Text.width(text) <= maxWidth) return text;
+        String cut = text;
+        while (cut.length() > 1 && Text.width(cut + "\u2026") > maxWidth) cut = cut.substring(0, cut.length() - 1);
+        return cut.stripTrailing() + "\u2026";
     }
 
     /** Why a module matched: what was typed underlined in its name, or the setting it matched by. */

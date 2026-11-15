@@ -22,11 +22,20 @@ public final class GuiSettings {
     public static final BoolSetting ANIMATIONS = add(new BoolSetting("Animations", true));
     /** The single-window menu with search, instead of the floating category windows. */
     public static final BoolSetting BETA = add(new BoolSetting("Beta UI", false));
+    /** The title, loading and pause screens in Cyanite's look; off leaves them to the game and other mods. */
+    public static final BoolSetting HOME = add(new BoolSetting("Cyanite title screen", true));
+    /** Behind the title screen and menus: Cyanite's own, plainer, the game's panorama, or your picture (cyanite/background.png or .jpg). */
+    public static final ModeSetting BACKGROUND = add(new ModeSetting("Title background", "Crystal", List.of("Crystal", "Minimal", "Panorama", "Picture")));
+    /** After a dropped connection, a restart or a full server, the disconnected screen counts down and puts you back on (three tries). */
+    public static final BoolSetting REJOIN = add(new BoolSetting("Rejoin countdown", true));
     /** New releases from GitHub: put in when the game closes, just mentioned, or not looked for. */
     public static final ModeSetting UPDATES = add(new ModeSetting("Updates", "Install", List.of("Install", "Tell me", "Off")));
+    /** Counts you on Cyanite's online counter (once Mojang vouches for your account) and shows how many are on; off sends nothing. */
+    public static final BoolSetting ONLINE = add(new BoolSetting("Online count", true));
 
     static {
         FONT.onChange(() -> Text.setFamily(FONT.get()));
+        BACKGROUND.onChange(Backdrop::picked);
     }
 
     private GuiSettings() {

@@ -3,11 +3,13 @@ package com.cyanite.client.mixin;
 import com.cyanite.client.modules.donut.BountyBalance;
 import com.cyanite.client.modules.donut.FakePay;
 import com.cyanite.client.modules.donut.ScoreboardSpoof;
+import com.cyanite.client.modules.render.Cinematic;
 import com.cyanite.client.system.Modules;
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiGraphics;
@@ -88,5 +90,37 @@ public class GuiMixin {
         ScoreboardSpoof spoof = Modules.get(ScoreboardSpoof.class);
         if (spoof != null && spoof.hidesNumbers()) return;
         original.call(graphics, font, text, x, y, color, shadow);
+    }
+
+    // Cinematic: the HUD pieces it's set to hide.
+    @Inject(method = "renderCrosshair", at = @At("HEAD"), cancellable = true)
+    private void cyanite$cinematicCrosshair(GuiGraphics graphics, DeltaTracker deltaTracker, CallbackInfo ci) {
+        if (Cinematic.hidesCrosshair()) ci.cancel();
+    }
+
+    @Inject(method = "renderHotbarAndDecorations", at = @At("HEAD"), cancellable = true)
+    private void cyanite$cinematicHotbar(GuiGraphics graphics, DeltaTracker deltaTracker, CallbackInfo ci) {
+        if (Cinematic.hidesHotbar()) ci.cancel();
+    }
+
+    @Inject(method = "renderEffects", at = @At("HEAD"), cancellable = true)
+    private void cyanite$cinematicEffects(GuiGraphics graphics, DeltaTracker deltaTracker, CallbackInfo ci) {
+        if (Cinematic.hidesEffects()) ci.cancel();
+    }
+
+    @Inject(method = "renderBossOverlay", at = @At("HEAD"), cancellable = true)
+    private void cyanite$cinematicBossBars(GuiGraphics graphics, DeltaTracker deltaTracker, CallbackInfo ci) {
+        if (Cinematic.hidesBossBars()) ci.cancel();
+    }
+
+    @Inject(method = "renderScoreboardSidebar", at = @At("HEAD"), cancellable = true)
+    private void cyanite$cinematicScoreboard(GuiGraphics graphics, DeltaTracker deltaTracker, CallbackInfo ci) {
+        if (Cinematic.hidesScoreboard()) ci.cancel();
+    }
+
+    // Only the chat lines over the game: open chat still shows them.
+    @Inject(method = "renderChat", at = @At("HEAD"), cancellable = true)
+    private void cyanite$cinematicChat(GuiGraphics graphics, DeltaTracker deltaTracker, CallbackInfo ci) {
+        if (Cinematic.hidesChat()) ci.cancel();
     }
 }

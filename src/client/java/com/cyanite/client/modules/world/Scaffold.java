@@ -25,6 +25,11 @@ public class Scaffold extends Module {
     }
 
     @Override
+    protected boolean ticksEarly() {
+        return true;
+    }
+
+    @Override
     public void onTick() {
         if (mc.screen != null) return;
 

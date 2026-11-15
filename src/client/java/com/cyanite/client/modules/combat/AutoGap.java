@@ -34,6 +34,11 @@ public class AutoGap extends Module {
     }
 
     @Override
+    protected boolean ticksEarly() {
+        return true;
+    }
+
+    @Override
     public void onTick() {
         if (eating) {
             if (!isGap(mc.player.getItemInHand(hand))) {

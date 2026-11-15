@@ -25,7 +25,7 @@ public class ESP extends Module {
     private final BoolSetting items = add(new BoolSetting("Items", false));
     private final ColorSetting itemColor = add(new ColorSetting("Item color", 0xE6E6E6));
     private final BoolSetting invisibles = add(new BoolSetting("Invisibles", true));
-    private final EspStyle style = new EspStyle(false);
+    private final EspStyle style = new EspStyle(false, true);
 
     public ESP() {
         super(Category.RENDER, "ESP", "Shows entities through walls");
@@ -34,7 +34,7 @@ public class ESP extends Module {
 
     @Override
     public String getInfo() {
-        return "Box";
+        return style.shape();
     }
 
     @Override
@@ -47,7 +47,7 @@ public class ESP extends Module {
 
             // Boxes follow the entity's interpolated position so they don't lag behind at high frame rates.
             AABB box = entity.getBoundingBox().move(entity.getPosition(pt).subtract(entity.position()));
-            style.draw(render, box, rgb);
+            style.draw(render, entity, box, rgb);
         }
     }
 

@@ -4,6 +4,7 @@ import com.cyanite.client.mixin.MobInvoker;
 import com.cyanite.client.modules.combat.AntiBot;
 import com.cyanite.client.system.Category;
 import com.cyanite.client.system.Module;
+import com.cyanite.client.system.Modules;
 import com.cyanite.client.system.setting.BoolSetting;
 import com.cyanite.client.system.setting.ModeSetting;
 import com.cyanite.client.system.setting.SliderSetting;
@@ -15,6 +16,7 @@ import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.AgeableMob;
@@ -52,7 +54,8 @@ import java.util.UUID;
 /**
  * Pets that follow you around: real mob models that exist only on your screen. Nobody else sees
  * them and the server never hears of them. Up to three trot along behind you, keep out from under
- * your feet, and sit down when you stand still.
+ * your feet, and sit down when you stand still. Minecraft has no monkey, so the Monkey is a tame
+ * wolf underneath, drawn with a model of its own (MonkeyRenderer).
  *
  * <p>When you get too far ahead, or round a corner out of sight, they come straight to you: that's
  * also what brings them along after /rtp, a /home or a portal. They're made again in every world
@@ -67,7 +70,7 @@ import java.util.UUID;
  */
 public class Pets extends Module {
     private static final List<String> KINDS = List.of("Wolf", "Cat", "Fox", "Parrot", "Allay", "Bee", "Axolotl", "Frog",
-        "Rabbit", "Armadillo", "Panda", "Chicken");
+        "Rabbit", "Armadillo", "Panda", "Chicken", "Monkey");
     private static final Set<String> FLYING = Set.of("Parrot", "Allay", "Bee");
     private static final int SLOTS = 3;
     /** Ids far below anything a server hands out, so they never clash with a real entity. */
@@ -154,6 +157,26 @@ public class Pets extends Module {
     public static boolean isPet(Entity entity) {
         int id = entity.getId();
         return id <= FIRST_ID && id > FIRST_ID - SLOTS;
+    }
+
+    /** A Monkey pet, drawn by MonkeyRenderer instead of the wolf it is underneath. */
+    public static boolean isMonkey(Entity entity) {
+        Pet pet = petOf(entity);
+        return pet != null && pet.kind.equals("Monkey") && entity instanceof Wolf;
+    }
+
+    /** The reaction a pet is showing right now, or null: the monkey acts it out with its arms. */
+    public static Mood showing(Entity entity) {
+        Pet pet = petOf(entity);
+        if (pet == null || pet.mood == null) return null;
+        int t = Modules.get(Pets.class).ticks - pet.moodStart;
+        return t >= 0 && t <= pet.mood.ticks ? pet.mood : null;
+    }
+
+    private static Pet petOf(Entity entity) {
+        if (!isPet(entity)) return null;
+        Pet pet = Modules.get(Pets.class).pets[FIRST_ID - entity.getId()];
+        return pet != null && pet.entity == entity ? pet : null;
     }
 
     @Override
@@ -414,7 +437,10 @@ public class Pets extends Module {
     /** Its own voice, played just for you: pets are silent otherwise. */
     private void sound(Pet pet, float pitch) {
         if (!sounds.get() || !(pet.entity instanceof Mob mob)) return;
-        SoundEvent sound = ((MobInvoker) mob).cyanite$ambientSound();
+        // No monkey in the game to borrow a voice from: a dolphin's chirps, higher, are the nearest chatter.
+        boolean monkey = pet.kind.equals("Monkey");
+        if (monkey) pitch *= 1.2f;
+        SoundEvent sound = monkey ? SoundEvents.DOLPHIN_AMBIENT : ((MobInvoker) mob).cyanite$ambientSound();
         if (sound == null) return;
         mc.level.playLocalSound(mob.getX(), mob.getY(), mob.getZ(), sound, SoundSource.NEUTRAL, 0.6f, pitch * (0.95f + random.nextFloat() * 0.1f), false);
     }
@@ -479,6 +505,9 @@ public class Pets extends Module {
         if (!name.isEmpty()) {
             entity.setCustomName(Component.literal(name));
             entity.setCustomNameVisible(true);
+        } else if (kind.equals("Monkey")) {
+            // Called a monkey, not a wolf, where its name shows (Nametags); hidden otherwise, like any unnamed pet.
+            entity.setCustomName(Component.literal("Monkey"));
         }
         boolean flying = FLYING.contains(kind);
         Vec3 spot = landing(slot, player, flying);
@@ -637,6 +666,7 @@ public class Pets extends Module {
             case "Armadillo" -> EntityType.ARMADILLO;
             case "Panda" -> EntityType.PANDA;
             case "Chicken" -> EntityType.CHICKEN;
+            // Wolf, Monkey (a wolf drawn as a monkey)
             default -> EntityType.WOLF;
         };
     }

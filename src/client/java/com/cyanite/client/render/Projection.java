@@ -36,6 +36,26 @@ public final class Projection {
         return Math.abs(m.m23() + 1f) < 1e-3f && Math.abs(m.m33()) < 1e-3f;
     }
 
+    /**
+     * Sets {@code out} to take a screen position (x, y in -1..1, z -1 near to 1 far) to a point
+     * relative to the camera, for drawing the sky: the inverse of this frame's projection and view.
+     * @return false before the first frame
+     */
+    public static boolean skyRay(Matrix4f out) {
+        if (!ready) return false;
+        out.set(VIEW).setTranslation(0, 0, 0).mulLocal(PROJECTION).invert();
+        return true;
+    }
+
+    /**
+     * Framebuffer pixels a block spans, face-on and one block in front of the camera, at this frame's
+     * FOV (zoom and all); divide by how far ahead something is for its size there. 0 before the first frame.
+     */
+    public static double pixelsPerBlock() {
+        if (!ready) return 0;
+        return PROJECTION.m11() * 0.5 * Minecraft.getInstance().getWindow().getHeight();
+    }
+
     /** Framebuffer pixel position of a world point, or null if it's behind the camera. */
     public static double[] toScreen(Vec3 world) {
         if (!ready) return null;

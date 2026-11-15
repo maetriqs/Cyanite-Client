@@ -1,6 +1,7 @@
 package com.cyanite.client.modules.combat;
 
 import com.cyanite.client.system.Category;
+import com.cyanite.client.system.Targets;
 import com.cyanite.client.system.WorldScan;
 import com.cyanite.client.system.Module;
 import com.cyanite.client.system.setting.BoolSetting;
@@ -48,6 +49,11 @@ public class KillAura extends Module {
     }
 
     @Override
+    protected boolean ticksEarly() {
+        return true;
+    }
+
+    @Override
     public void onTick() {
         if (mc.screen != null) return;
         if (pauseOnUse.get() && (mc.player.isUsingItem() || AutoGap.busy())) return;
@@ -56,7 +62,14 @@ public class KillAura extends Module {
         LivingEntity target = findTarget();
         if (target == null) return;
 
-        if (rotate.get()) face(target);
+        if (rotate.get()) {
+            // A hit is judged by the look the server already has, so swing only once that look is on
+            // the target, then turn for the next one. Turning and swinging at once lands the hit where
+            // you were looking a tick ago, which misses whenever either of you is moving.
+            boolean onIt = Targets.sentLookHits(target.getBoundingBox().inflate(target.getPickRadius()), range.get());
+            face(target);
+            if (!onIt) return;
+        }
         if (!ready()) return;
 
         mc.gameMode.attack(mc.player, target);
@@ -119,13 +132,14 @@ public class KillAura extends Module {
 
     private void face(Entity entity) {
         float[] wanted = rotationTo(entity);
-        mc.player.setYRot(wanted[0]);
-        mc.player.setXRot(wanted[1]);
+        Targets.turnTo(wanted[0], wanted[1]);
     }
 
+    /** The look at the middle of the target, from where you'll both be next tick, which is when it's used. */
     private float[] rotationTo(Entity entity) {
-        Vec3 eyes = mc.player.getEyePosition();
-        Vec3 aim = entity.getBoundingBox().getCenter();
+        Vec3 motion = mc.player.getDeltaMovement();
+        Vec3 eyes = mc.player.getEyePosition().add(motion.x, 0, motion.z);
+        Vec3 aim = entity.getBoundingBox().getCenter().add(entity.getX() - entity.xo, entity.getY() - entity.yo, entity.getZ() - entity.zo);
         double dx = aim.x - eyes.x;
         double dy = aim.y - eyes.y;
         double dz = aim.z - eyes.z;

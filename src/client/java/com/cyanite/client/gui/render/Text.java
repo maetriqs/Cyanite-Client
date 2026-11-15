@@ -39,6 +39,8 @@ public final class Text {
     // One atlas per font and GUI scale, since the HUD and a menu can be at different scales at once.
     private static final Map<String, TrueTypeFont> LOADED = new HashMap<>();
     private static final Set<String> BROKEN = new HashSet<>();
+    private static final Map<String, Face> FACES = new HashMap<>();
+    private static final int MAX_FACES = 16;
 
     private Text() {
     }
@@ -66,6 +68,7 @@ public final class Text {
         family = name;
         LOADED.values().forEach(TrueTypeFont::close);
         LOADED.clear();
+        dropFaces();
     }
 
     /**
@@ -115,6 +118,85 @@ public final class Text {
         }
         font.draw(g, text, x * unit, y * unit, color);
         Render2D.end(g);
+    }
+
+    /**
+     * Display text at a size of its own, for screens laid out in framebuffer pixels rather than GUI units:
+     * capitals {@code capPx} pixels tall in {@link #smoothFamily()}. A null charset is the usual one.
+     * Ask again every frame instead of keeping it: the atlases behind old ones are let go.
+     */
+    public static Face face(boolean bold, int capPx, String charset) {
+        String name = smoothFamily();
+        String key = name + "|" + bold + "|" + capPx + "|" + charset;
+        Face face = FACES.get(key);
+        if (face != null) return face;
+
+        TrueTypeFont font = null;
+        if (!MINECRAFT.equals(name)) {
+            try {
+                font = new TrueTypeFont(name, bold, capPx, charset);
+            } catch (Throwable t) {
+                LOGGER.error("Couldn't load font '{}', falling back to the Minecraft font", name, t);
+                BROKEN.add(name);
+                if (name.equals(family)) family = MINECRAFT;
+            }
+        }
+        if (FACES.size() >= MAX_FACES) dropFaces();
+        face = new Face(font, capPx);
+        FACES.put(key, face);
+        return face;
+    }
+
+    private static void dropFaces() {
+        List<TrueTypeFont> old = new ArrayList<>();
+        for (Face face : FACES.values()) {
+            if (face.font != null) old.add(face.font);
+        }
+        FACES.clear();
+        // A frame late: what this frame drew with them hasn't reached the screen yet.
+        if (!old.isEmpty()) Minecraft.getInstance().schedule(() -> old.forEach(TrueTypeFont::close));
+    }
+
+    /** One size of display text. Everything is in pixels of the pose it's drawn in, {@code y} at the top of capitals. */
+    public static final class Face {
+        private final TrueTypeFont font;
+        private final int capPx;
+
+        private Face(TrueTypeFont font, int capPx) {
+            this.font = font;
+            this.capPx = capPx;
+        }
+
+        /** Whether {@code text} draws in the smooth font; otherwise it's the game's font, scaled to the same height. */
+        public boolean smooth(String text) {
+            return font != null && font.covers(text);
+        }
+
+        public float width(String text) {
+            return width(text, 0);
+        }
+
+        public float width(String text, float tracking) {
+            if (smooth(text)) return font.width(text, tracking);
+            return Minecraft.getInstance().font.width(text) * capPx / (float) CAP;
+        }
+
+        public void draw(GuiGraphics g, String text, int x, int y, int color) {
+            draw(g, text, x, y, color, 0);
+        }
+
+        public void draw(GuiGraphics g, String text, int x, int y, int color, float tracking) {
+            if ((color >>> 24) < 4 || text.isEmpty()) return;
+            if (smooth(text)) {
+                font.draw(g, text, x, y, color, tracking);
+                return;
+            }
+            g.pose().pushMatrix();
+            g.pose().translate(x, y);
+            g.pose().scale(capPx / (float) CAP);
+            g.drawString(Minecraft.getInstance().font, text, 0, 0, color, false);
+            g.pose().popMatrix();
+        }
     }
 
     private static TrueTypeFont font() {

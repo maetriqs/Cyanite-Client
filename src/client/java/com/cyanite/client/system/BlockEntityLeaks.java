@@ -67,6 +67,7 @@ public final class BlockEntityLeaks {
         private Source source;
         private String event;
         private boolean hidden;
+        private BlockState disguise;
 
         private Found(BlockPos pos, BlockEntityType<?> type, CompoundTag tag, Source source) {
             this.pos = pos;
@@ -100,6 +101,11 @@ public final class BlockEntityLeaks {
         /** The leak: the client doesn't have it, because it was told the block there is something else. */
         public boolean hidden() {
             return hidden;
+        }
+
+        /** What the server last said is at its spot instead (the made-up rock), while it's hidden; else null. */
+        public BlockState disguise() {
+            return hidden ? disguise : null;
         }
 
         /** Its type's id, "mob_spawner", "chest". */
@@ -177,13 +183,15 @@ public final class BlockEntityLeaks {
             boolean event = was != null && was.type == type && was.source == Source.EVENT;
             Found f = new Found(pos.immutable(), type, tag, event ? Source.EVENT : Source.CHUNK);
             if (event) f.event = was.event;
-            f.hidden = !type.isValid(chunk.getBlockState(pos));
+            f.disguise = chunk.getBlockState(pos);
+            f.hidden = !type.isValid(f.disguise);
             add(key, f);
         });
         // Except what gave itself away some other way: a server that strips the list doesn't make those untrue.
         if (old != null) {
             for (Found f : old.values()) {
                 if (f.source == Source.EVENT && !chunk.getBlockState(f.pos).hasBlockEntity() && at(f.pos) == null) {
+                    f.disguise = chunk.getBlockState(f.pos);
                     f.hidden = true;
                     add(key, f);
                 }
@@ -200,7 +208,8 @@ public final class BlockEntityLeaks {
         CompoundTag keep = tag != null && !tag.isEmpty() ? tag : same ? was.tag : null;
         Found f = new Found(pos.immutable(), type, keep, same ? was.source : Source.UPDATE);
         if (same) f.event = was.event;
-        f.hidden = !type.isValid(level().getBlockState(pos));
+        f.disguise = level().getBlockState(pos);
+        f.hidden = !type.isValid(f.disguise);
         add(ChunkPos.asLong(pos), f);
     }
 
@@ -219,6 +228,7 @@ public final class BlockEntityLeaks {
             remove(in, ChunkPos.asLong(pos), f);
         } else {
             // Swapped for rock: the server hiding it again.
+            f.disguise = state;
             hide(f, true);
         }
     }
@@ -317,6 +327,7 @@ public final class BlockEntityLeaks {
         if (was != null && was.type == type && was.hidden) return;
         Found f = new Found(pos.immutable(), type, was != null && was.type == type ? was.tag : null, Source.EVENT);
         f.event = what;
+        f.disguise = level().getBlockState(pos);
         f.hidden = true;
         add(ChunkPos.asLong(pos), f);
     }

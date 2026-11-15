@@ -915,7 +915,7 @@ public class BedrockBurrow extends Module {
             + " round it up to Y " + checkTop.get().intValue() + "." + sealed;
         if (disconnect.get() && mc.getConnection() != null) {
             setEnabled(false);
-            mc.getConnection().getConnection().disconnect(com.cyanite.client.system.Stealth.disconnectReason(reason));
+            com.cyanite.client.system.Disconnects.leave(reason);
             return;
         }
         stop("Bedrock Burrow: spot found!", coords(at) + ", no caves in the " + area + " round it up to Y " + checkTop.get().intValue() + "." + sealed);

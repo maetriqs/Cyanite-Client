@@ -175,7 +175,7 @@ public final class Macro {
     public static boolean risky(MacroStep step) {
         return switch (step.type) {
             case SAY -> RISKY.matcher(step.text("text").strip()).find();
-            case DROP, CLICK_SLOT, MODULE -> true;
+            case DROP, CLICK_SLOT, MENU_SWAP, MODULE -> true;
             default -> false;
         };
     }

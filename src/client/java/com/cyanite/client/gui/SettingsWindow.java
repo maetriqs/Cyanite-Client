@@ -15,7 +15,7 @@ import java.util.List;
  * show inline. Long lists are split into two columns of roughly equal height.
  */
 final class SettingsWindow {
-    static final int COLUMN = 150;
+    static final int COLUMN = 168;
     private static final int GAP = 6;
     private static final int HEADER = 18;
     private static final int DESCRIPTION = 13;
@@ -114,9 +114,10 @@ final class SettingsWindow {
         int w = width();
         int closeX = x + w - 14;
         int toggleX = closeX - 6 - Widgets.TOGGLE_W;
+        int toggleLeft = toggleLeft(toggleX);
 
         boolean overClose = hovered && Page.inside(mouseX, mouseY, closeX - 3, top, 14, HEADER);
-        boolean overToggle = hovered && Page.inside(mouseX, mouseY, toggleX - 2, top, Widgets.TOGGLE_W + 4, HEADER);
+        boolean overToggle = hovered && Page.inside(mouseX, mouseY, toggleLeft - 2, top, toggleX + Widgets.TOGGLE_W + 2 - (toggleLeft - 2), HEADER);
         boolean overHeader = hovered && !overClose && !overToggle && Page.inside(mouseX, mouseY, x, top, w, HEADER);
         closeHover = Anim.approach(closeHover, overClose ? 1 : 0, dt, 16);
 
@@ -128,6 +129,10 @@ final class SettingsWindow {
 
         Text.draw(g, module.name, x + 8, top + (HEADER - Text.CAP) / 2, Theme.fade(module.anticheatDownOnly() ? Theme.DANGER : Theme.TEXT, a));
         Widgets.toggle(g, toggleX, top + (HEADER - Widgets.TOGGLE_H) / 2, on, a);
+        if (toggleLeft < toggleX) {
+            Text.draw(g, ACTIVE, toggleLeft, top + (HEADER - Text.CAP) / 2,
+                Theme.fade(Theme.mix(Theme.mix(Theme.TEXT_FAINT, Theme.TEXT_DIM, overToggle ? 1 : 0), Theme.accentText(), on), a));
+        }
         drawCross(g, closeX + 4, top + HEADER / 2, Theme.fade(Theme.mix(Theme.TEXT_DIM, Theme.DANGER, closeHover), a));
 
         if (module.anticheatDownOnly()) {
@@ -154,6 +159,13 @@ final class SettingsWindow {
                 Render2D.end(g);
             }
         }
+    }
+
+    private static final String ACTIVE = "Active";
+
+    /** Where the on/off control starts: with the classic menu's check box, the word before it. */
+    private static int toggleLeft(int toggleX) {
+        return Widgets.classic() ? toggleX + Widgets.TOGGLE_W - 8 - 4 - Text.width(ACTIVE) : toggleX;
     }
 
     private static String fit(String text, int maxWidth) {
@@ -186,12 +198,13 @@ final class SettingsWindow {
         int w = width();
         int closeX = x + w - 14;
         int toggleX = closeX - 6 - Widgets.TOGGLE_W;
+        int toggleLeft = toggleLeft(toggleX);
 
         if (Page.inside(mouseX, mouseY, x, y, w, HEADER)) {
             if (button != 0) return true;
             if (Page.inside(mouseX, mouseY, closeX - 3, y, 14, HEADER)) {
                 close();
-            } else if (Page.inside(mouseX, mouseY, toggleX - 2, y, Widgets.TOGGLE_W + 4, HEADER)) {
+            } else if (Page.inside(mouseX, mouseY, toggleLeft - 2, y, toggleX + Widgets.TOGGLE_W + 2 - (toggleLeft - 2), HEADER)) {
                 module.toggle();
             } else {
                 dragging = true;

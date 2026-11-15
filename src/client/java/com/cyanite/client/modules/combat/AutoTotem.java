@@ -1,11 +1,14 @@
 package com.cyanite.client.modules.combat;
 
+import com.cyanite.client.gui.render.Render2D;
 import com.cyanite.client.mixin.AbstractContainerScreenAccessor;
 import com.cyanite.client.system.Category;
 import com.cyanite.client.system.Module;
+import com.cyanite.client.system.setting.BoolSetting;
 import com.cyanite.client.system.setting.ModeSetting;
 import com.cyanite.client.system.setting.SliderSetting;
 import com.mojang.blaze3d.platform.Window;
+import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.ClickType;
@@ -20,7 +23,9 @@ import java.util.Random;
  * Keeps a totem in your offhand. Instant: swapped in the moment it's gone. Inventory: the way you'd
  * do it yourself, so it looks real to a server or anyone watching: a moment to react, your inventory
  * opens, the mouse moves over to a totem, the offhand key swaps it in, a moment, and it closes. Every
- * delay is a little different each time.
+ * delay is a little different each time. When opened: it never opens your inventory itself; open it
+ * and, a moment later, a totem's swapped in (your mouse left alone), the inventory left open. With
+ * No totem glow, the edges of the screen glow red while the offhand has none.
  */
 public class AutoTotem extends Module {
     private static final int OFFHAND_BUTTON = 40;
@@ -28,9 +33,10 @@ public class AutoTotem extends Module {
     private final ModeSetting mode = add(new ModeSetting("Mode", "Always", List.of("Always", "Low health")));
     private final SliderSetting health = add(new SliderSetting("Health", 10, 1, 20, 1));
     private final SliderSetting delay = add(new SliderSetting("Delay", 0, 0, 10, 1).format(v -> (int) v + " ticks"));
-    private final ModeSetting style = add(new ModeSetting("Style", "Instant", List.of("Instant", "Inventory")));
+    private final ModeSetting style = add(new ModeSetting("Style", "Instant", List.of("Instant", "Inventory", "When opened")));
     private final SliderSetting humanMin = add(new SliderSetting("Human delay min", 2, 1, 10, 1).format(v -> (int) (double) v + " ticks"));
     private final SliderSetting humanMax = add(new SliderSetting("Human delay max", 5, 1, 15, 1).format(v -> (int) (double) v + " ticks"));
+    private final BoolSetting glow = add(new BoolSetting("No totem glow", true));
 
     private enum Step { IDLE, OPEN, MOVE, CLICK, CLOSE }
 
@@ -48,7 +54,7 @@ public class AutoTotem extends Module {
     private double toY;
 
     public AutoTotem() {
-        super(Category.COMBAT, "Auto Totem", "Keeps a totem in your offhand, instantly or through your inventory like you would");
+        super(Category.COMBAT, "Auto Totem", "Keeps a totem in your offhand, instantly, through your inventory like you would, or once you open it; the screen glows red while it's empty");
     }
 
     @Override
@@ -90,6 +96,13 @@ public class AutoTotem extends Module {
         if (mc.screen != null && !(mc.screen instanceof InventoryScreen)) return;
 
         // In creative nobody's watching how it's done (and the inventory there is another screen).
+        if (style.is("When opened") && !mc.player.isCreative()) {
+            // Only once you've opened your inventory yourself, a moment after.
+            if (!(mc.screen instanceof InventoryScreen)) return;
+            step = Step.OPEN;
+            wait = human();
+            return;
+        }
         if (style.is("Inventory") && !mc.player.isCreative()) {
             step = Step.OPEN;
             wait = human();
@@ -120,14 +133,15 @@ public class AutoTotem extends Module {
             case OPEN -> {
                 if (found < 0 || mc.player.getOffhandItem().is(Items.TOTEM_OF_UNDYING)) {
                     finish();
-                } else if (mc.screen == null) {
+                } else if (mc.screen == null && !style.is("When opened")) {
                     mc.setScreen(new InventoryScreen(mc.player));
                     opened = true;
                     step = Step.MOVE;
                     moveStart = 0;
                 } else if (mc.screen instanceof InventoryScreen) {
                     opened = false;
-                    step = Step.MOVE;
+                    // Your inventory, opened by you: the swap without taking your mouse.
+                    step = style.is("When opened") ? Step.CLICK : Step.MOVE;
                     moveStart = 0;
                 } else {
                     finish();
@@ -142,6 +156,8 @@ public class AutoTotem extends Module {
                     step = Step.CLOSE;
                     return;
                 }
+                // Something on the cursor: the offhand key does nothing then, so not till it's put down.
+                if (!mc.player.inventoryMenu.getCarried().isEmpty()) return;
                 // The offhand key over the totem: the swap a player does.
                 mc.gameMode.handleInventoryMouseClick(mc.player.inventoryMenu.containerId, menuSlot(found), OFFHAND_BUTTON, ClickType.SWAP, mc.player);
                 step = Step.CLOSE;
@@ -162,6 +178,31 @@ public class AutoTotem extends Module {
         }
         step = Step.IDLE;
         opened = false;
+    }
+
+    /** The screen's edges glowing red, a slow pulse, while there's no totem in your offhand. */
+    @Override
+    public void onRender2D(GuiGraphics g, float partialTick) {
+        if (!glow.get() || mc.player.getOffhandItem().is(Items.TOTEM_OF_UNDYING) || mc.player.isCreative() || mc.player.isSpectator()) return;
+        // Auto Mine's bottles in the off hand for a moment, mending the drill: it puts the totem back.
+        com.cyanite.client.modules.world.AutoMine autoMine = com.cyanite.client.system.Modules.get(com.cyanite.client.modules.world.AutoMine.class);
+        if (autoMine != null && autoMine.usesOffhand()) return;
+        // Render2D.pixels is the window's own pixels here.
+        int w = mc.getWindow().getWidth();
+        int h = mc.getWindow().getHeight();
+        // How far in it reaches, in steps of 16 pixels (each size is a texture of its own).
+        int depth = Math.max(32, Math.min(w, h) / 6 / 16 * 16);
+        double pulse = 0.5 + 0.5 * Math.sin(System.currentTimeMillis() / 450.0);
+        int alpha = (int) Math.round(255 * (0.4 + 0.2 * pulse));
+        int red = alpha << 24 | 0xE01818;
+        // A strip just off each edge, its glow reaching in; the corners, where two meet, glow most.
+        int off = 8;
+        Render2D.pixels(g);
+        Render2D.glow(g, -off, -depth, off, h + 2 * depth, 0, depth, red);
+        Render2D.glow(g, w, -depth, off, h + 2 * depth, 0, depth, red);
+        Render2D.glow(g, 0, -off, w, off, 0, depth, red);
+        Render2D.glow(g, 0, h, w, off, 0, depth, red);
+        Render2D.end(g);
     }
 
     @Override

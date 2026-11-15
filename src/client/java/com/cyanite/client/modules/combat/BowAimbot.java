@@ -91,8 +91,7 @@ public class BowAimbot extends Module {
         float yaw = (float) shot[0];
         float pitch = (float) shot[1];
         if (!smooth.get()) {
-            mc.player.setYRot(yaw);
-            mc.player.setXRot(pitch);
+            Targets.turnTo(yaw, pitch);
             target = best;
             return;
         }

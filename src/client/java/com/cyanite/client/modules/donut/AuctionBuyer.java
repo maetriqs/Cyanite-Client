@@ -24,6 +24,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Predicate;
 
 /**
  * Buys an item off DonutSMP's auction house, the way you would: /ah and the item's name (with
@@ -33,7 +34,8 @@ import java.util.Locale;
  * actually turned up in your inventory. It searches again until it has enough, runs out of
  * affordable listings, or hits its budget. A listing someone else bought just before its click
  * landed ("This item was already bought", in chat or the action bar) means searching again for
- * the next one, up to five in a row.
+ * the next one, up to five in a row. It never clicks a listing your inventory hasn't room for:
+ * bought into a full inventory, the items land on the ground, paid for all the same.
  *
  * <p>With the server's confirm screen turned off (DonutSMP lets you), a click on the listing buys
  * it, and nothing else is ever clicked: it only waits for the items to arrive. It closes the menu
@@ -74,6 +76,8 @@ public final class AuctionBuyer {
     /** The cheapest apiece any listing of the item went for, cap or no cap (NaN if none was seen). */
     private double cheapest = Double.NaN;
     private boolean active;
+    /** It stopped because what's listed wouldn't fit in your inventory. */
+    private boolean full;
     private boolean confirm;
     private int snipedInRow;
     private boolean wholeStacks;
@@ -82,6 +86,8 @@ public final class AuctionBuyer {
     /** The search just sent had "stack" on the end: full stacks only. */
     private boolean stackSearch;
     private long sendAfter;
+    /** Which listings of the item will do: all of them, unless the buyer's choosy (rockets without stars). */
+    private Predicate<ItemStack> accept = stack -> true;
     private final java.util.Random random = new java.util.Random();
 
     /**
@@ -92,6 +98,12 @@ public final class AuctionBuyer {
      * however it's listed.
      */
     public void start(Item item, int count, double maxEach, double budget, boolean confirm, boolean wholeStacks) {
+        start(item, count, maxEach, budget, confirm, wholeStacks, stack -> true);
+    }
+
+    /** As {@link #start(Item, int, double, double, boolean, boolean)}, clicking only listings {@code accept} passes. */
+    public void start(Item item, int count, double maxEach, double budget, boolean confirm, boolean wholeStacks, Predicate<ItemStack> accept) {
+        this.accept = accept;
         this.confirm = confirm;
         this.wholeStacks = wholeStacks;
         this.noStacks = false;
@@ -101,6 +113,7 @@ public final class AuctionBuyer {
         this.budget = budget;
         this.spent = 0;
         this.got = 0;
+        this.full = false;
         this.why = "";
         this.cheapest = Double.NaN;
         refusal = null;
@@ -122,6 +135,11 @@ public final class AuctionBuyer {
 
     public int got() {
         return got;
+    }
+
+    /** Whether it stopped for want of room: nothing listed would fit in your inventory. */
+    public boolean full() {
+        return full;
     }
 
     /** The cheapest apiece it saw listed, over the cap or not; NaN if there were none. */
@@ -212,15 +230,21 @@ public final class AuctionBuyer {
                 Slot best = null;
                 double bestEach = Double.MAX_VALUE;
                 double bestPrice = 0;
+                int room = room(item);
+                boolean tooBig = false;
                 for (Slot slot : menu.slots) {
                     if (slot.container instanceof Inventory) continue;
                     ItemStack stack = slot.getItem();
-                    if (!stack.is(item)) continue;
+                    if (!stack.is(item) || !accept.test(stack)) continue;
                     if (wholeStacks && stackSearch && stack.getCount() < stack.getMaxStackSize()) continue;
                     double[] p = price(stack);
                     if (p == null) continue;
                     if (Double.isNaN(cheapest) || p[1] < cheapest) cheapest = p[1];
                     if (p[1] > maxEach || spent + p[0] > budget) continue;
+                    if (stack.getCount() > room) {
+                        tooBig = true;
+                        continue;
+                    }
                     if (p[1] < bestEach) {
                         best = slot;
                         bestEach = p[1];
@@ -232,6 +256,11 @@ public final class AuctionBuyer {
                     noStacks = true;
                     go(Stage.CLOSE_FIRST);
                     return Result.RUNNING;
+                }
+                if (best == null && tooBig) {
+                    log("No room for any of them: " + room + " more fit");
+                    full = true;
+                    return finish(got > 0 ? Result.DONE : Result.FAILED, "no room in your inventory");
                 }
                 if (best == null) {
                     log("Nothing affordable listed");
@@ -269,6 +298,18 @@ public final class AuctionBuyer {
             }
         }
         return Result.RUNNING;
+    }
+
+    /** How many more of {@code item} your inventory takes. */
+    private int room(Item item) {
+        Inventory inventory = mc.player.getInventory();
+        int n = 0;
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = inventory.getItem(i);
+            if (stack.isEmpty()) n += item.getDefaultMaxStackSize();
+            else if (stack.is(item) && stack.getComponentsPatch().isEmpty()) n += Math.max(0, stack.getMaxStackSize() - stack.getCount());
+        }
+        return n;
     }
 
     private Result bought() {
@@ -334,10 +375,15 @@ public final class AuctionBuyer {
         return new double[] {total, each};
     }
 
-    /** The confirm button of a confirm menu: by its name, or failing that a green pane or block. */
+    /** The confirm button of a confirm menu the listing's click opened. */
     private Slot confirmButton(AbstractContainerMenu menu) {
         // Only in a menu the click opened: the listing menu's own buttons (buy orders and the like) are never pressed.
         if (menu.containerId == lastMenu) return null;
+        return confirmIn(menu);
+    }
+
+    /** A confirm menu's confirm button: by its name, or failing that a green pane or block. */
+    static Slot confirmIn(AbstractContainerMenu menu) {
         Slot green = null;
         for (Slot slot : menu.slots) {
             if (slot.container instanceof Inventory) continue;
@@ -366,7 +412,7 @@ public final class AuctionBuyer {
         return n;
     }
 
-    private static List<String> lines(ItemStack stack) {
+    static List<String> lines(ItemStack stack) {
         List<String> out = new ArrayList<>();
         out.add(stack.getHoverName().getString());
         ItemLore lore = stack.get(DataComponents.LORE);
@@ -379,7 +425,7 @@ public final class AuctionBuyer {
         return item.getDefaultInstance().getHoverName().getString();
     }
 
-    private static String money(double v) {
+    static String money(double v) {
         if (v >= 1e6) return String.format(Locale.ROOT, "%.2fM", v / 1e6);
         if (v >= 1e3) return String.format(Locale.ROOT, "%.1fK", v / 1e3);
         return String.format(Locale.ROOT, "%.0f", v);
@@ -398,7 +444,7 @@ public final class AuctionBuyer {
         log(sb.toString());
     }
 
-    private static void log(String line) {
+    static void log(String line) {
         Path file = Config.dir().resolve("ah-log.txt");
         try {
             Files.createDirectories(file.getParent());

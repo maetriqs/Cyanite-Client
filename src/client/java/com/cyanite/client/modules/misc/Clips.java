@@ -2,6 +2,7 @@ package com.cyanite.client.modules.misc;
 
 import com.cyanite.client.gui.Theme;
 import com.cyanite.client.system.Category;
+import com.cyanite.client.system.Ffmpeg;
 import com.cyanite.client.system.Module;
 import com.cyanite.client.system.Notify;
 import com.cyanite.client.system.Stealth;
@@ -468,31 +469,17 @@ public class Clips extends Module {
 
     // ---- ffmpeg
 
-    /** ffmpeg on the PATH, or where WinGet puts it, and the best encoder it can use; null if it's not there. */
+    /** ffmpeg (see {@link Ffmpeg#find}) and the best encoder it can use; null if it's not there. */
     private static synchronized String ffmpeg() {
         if (ffmpegLooked) return ffmpeg;
         ffmpegLooked = true;
-        List<String> tries = new ArrayList<>(List.of("ffmpeg"));
-        String local = System.getenv("LOCALAPPDATA");
-        if (local != null) {
-            Path winget = Path.of(local, "Microsoft", "WinGet");
-            tries.add(winget.resolve("Links").resolve("ffmpeg.exe").toString());
-            try (Stream<Path> found = Files.find(winget.resolve("Packages"), 5,
-                (p, a) -> p.getFileName().toString().equalsIgnoreCase("ffmpeg.exe") && p.toString().toLowerCase(Locale.ROOT).contains("ffmpeg"))) {
-                found.forEach(p -> tries.add(p.toString()));
-            } catch (IOException | RuntimeException ignored) {
-                // No WinGet packages.
-            }
+        String tool = Ffmpeg.find();
+        if (tool != null) {
+            encoder = bestEncoder(tool);
+            ffmpeg = tool;
+            LOGGER.info("Clips: using {} with {}", tool, encoder);
         }
-        for (String tool : tries) {
-            if (runs(List.of(tool, "-version"))) {
-                encoder = bestEncoder(tool);
-                ffmpeg = tool;
-                LOGGER.info("Clips: using {} with {}", tool, encoder);
-                return tool;
-            }
-        }
-        return null;
+        return ffmpeg;
     }
 
     /** The graphics card's encoder if it has one that works, else the quickest CPU one. */
@@ -507,19 +494,8 @@ public class Clips extends Module {
                 "-i", "color=c=black:s=640x360:r=30:d=0.3"));
             test.addAll(option);
             test.addAll(List.of("-f", "null", "-"));
-            if (runs(test)) return option;
+            if (Ffmpeg.runs(test)) return option;
         }
         return options.get(options.size() - 1);
-    }
-
-    private static boolean runs(List<String> cmd) {
-        try {
-            Process p = new ProcessBuilder(cmd).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
-            if (p.waitFor(15, TimeUnit.SECONDS) && p.exitValue() == 0) return true;
-            p.destroyForcibly();
-        } catch (IOException | InterruptedException ignored) {
-            // Not this one.
-        }
-        return false;
     }
 }

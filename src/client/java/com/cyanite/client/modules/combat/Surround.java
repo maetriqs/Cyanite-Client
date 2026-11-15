@@ -3,6 +3,7 @@ package com.cyanite.client.modules.combat;
 import com.cyanite.client.system.Category;
 import com.cyanite.client.system.Module;
 import com.cyanite.client.system.Notify;
+import com.cyanite.client.system.Targets;
 import com.cyanite.client.system.setting.BoolSetting;
 import com.cyanite.client.system.setting.SliderSetting;
 import net.minecraft.core.BlockPos;
@@ -36,6 +37,7 @@ public class Surround extends Module {
     private final BoolSetting offWhenMoving = add(new BoolSetting("Off when you move", true));
     private final BoolSetting switchBack = add(new BoolSetting("Switch back", true));
     private final BoolSetting swing = add(new BoolSetting("Swing", true));
+    private final BoolSetting rotate = add(new BoolSetting("Rotate", true));
 
     private Set<BlockPos> footprint;
 
@@ -46,6 +48,11 @@ public class Surround extends Module {
     @Override
     protected void onEnable() {
         footprint = null;
+    }
+
+    @Override
+    protected boolean ticksEarly() {
+        return true;
     }
 
     @Override
@@ -67,28 +74,53 @@ public class Surround extends Module {
             }
         }
 
-        int placed = 0;
+        List<BlockHitResult> hits = new ArrayList<>();
         for (BlockPos pos : wall) {
-            if (placed >= perTick.get()) break;
             if (!mc.level.getBlockState(pos).canBeReplaced() || occupied(pos)) continue;
             BlockHitResult hit = support(pos);
-            if (hit == null) continue;
-
-            int slot = findBlock();
-            if (slot < 0) {
-                Notify.send("Surround", "No obsidian (or other blast-proof block) in your hotbar", true, false, false);
-                setEnabled(false);
-                return;
-            }
-            int previous = mc.player.getInventory().getSelectedSlot();
-            mc.player.getInventory().setSelectedSlot(slot);
-            InteractionResult result = mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
-            if (result.consumesAction()) {
-                placed++;
-                if (swing.get()) mc.player.swing(InteractionHand.MAIN_HAND);
-            }
-            if (switchBack.get()) mc.player.getInventory().setSelectedSlot(previous);
+            if (hit != null) hits.add(hit);
         }
+        if (hits.isEmpty()) return;
+
+        int slot = findBlock();
+        if (slot < 0) {
+            Notify.send("Surround", "No obsidian (or other blast-proof block) in your hotbar", true, false, false);
+            setEnabled(false);
+            return;
+        }
+
+        if (!rotate.get()) {
+            int placed = 0;
+            for (BlockHitResult hit : hits) {
+                if (placed >= perTick.get()) break;
+                if (place(slot, hit)) placed++;
+            }
+            return;
+        }
+        // A click is judged by the look the server already has, so a block goes in only once that
+        // look is on what it's placed against; then turn to the next one. One block a tick.
+        BlockHitResult first = hits.get(0);
+        if (!Targets.sentLookHits(new AABB(first.getBlockPos()), mc.player.blockInteractionRange())) {
+            face(first.getLocation());
+            return;
+        }
+        place(slot, first);
+        if (hits.size() > 1) face(hits.get(1).getLocation());
+    }
+
+    private boolean place(int slot, BlockHitResult hit) {
+        int previous = mc.player.getInventory().getSelectedSlot();
+        mc.player.getInventory().setSelectedSlot(slot);
+        InteractionResult result = mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
+        boolean placed = result.consumesAction();
+        if (placed && swing.get()) mc.player.swing(InteractionHand.MAIN_HAND);
+        if (switchBack.get()) mc.player.getInventory().setSelectedSlot(previous);
+        return placed;
+    }
+
+    private static void face(Vec3 point) {
+        float[] look = Targets.rotationTo(point);
+        Targets.turnTo(look[0], look[1]);
     }
 
     /** Every block column your hitbox stands in, at foot level. */

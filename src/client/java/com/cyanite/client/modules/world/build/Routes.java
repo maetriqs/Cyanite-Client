@@ -24,7 +24,8 @@ import java.util.Set;
  * three, and the moves that make their own floor: a throwaway block put out beside the one you
  * stand on, to walk onto (bridging), or one a step lower to drop onto (stairs down a wall); one
  * put under you as you jump (pillaring); and one of yours mined out from under you, to come down
- * a block. So once it's up on what it's built it stays up
+ * a block (or, with a ladder of scaffolding under it, sunk through all the way to its foot). So
+ * once it's up on what it's built it stays up
  * there, walking along the top, rather than climbing down and building a new pillar for each spot.
  *
  * <p>Costs are in tenths of a step. A block put down costs a good deal more than walking: a moment
@@ -56,6 +57,15 @@ public final class Routes {
         default int fillCost(BlockPos cell) {
             return 0;
         }
+
+        /**
+         * Whether this is scaffolding of yours, a ladder: nowhere to stand on top of (crouching there,
+         * you'd sink), and it breaks at a touch on the way down, so going down one is a single move to
+         * its foot.
+         */
+        default boolean ladder(BlockPos cell) {
+            return false;
+        }
     }
 
     public static final int STEP = 10;
@@ -68,6 +78,8 @@ public final class Routes {
     public static final int BRIDGE = 60 + JUNK;
     public static final int PILLAR = 45 + JUNK;
     public static final int DIG = 30;
+    /** Each block of a ladder sunk through, on from a dig: quicker than walking. */
+    private static final int LADDER_DOWN = 5;
     private static final int MAX_DROP = 3;
     private static final int[][] DIAGONALS = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
     private static final Move[] MOVES = Move.values();
@@ -194,11 +206,17 @@ public final class Routes {
             if (build && pillars && building.contains(up) && Paths.passable(level, up.above()) && clear(up) && rules.mayFill(p)) {
                 relax(key, up, d + PILLAR + rules.fillCost(p), Move.PILLAR);
             }
-            // Down a block, mining out the throwaway one you stand on.
+            // Down a block, mining out the throwaway one you stand on; and on down any ladder under
+            // that, all the way to its foot.
             BlockPos under = p.below();
-            if (digs && !gone.contains(under) && rules.mayDig(under) && bounds.contains(under) && solidFloor(under.below()) && Paths.clearAir(level, p)
-                && !lavaAt(under) && rules.mayStand(under)) {
-                relax(key, under, d + DIG, Move.DIG);
+            if (digs && !gone.contains(under) && rules.mayDig(under) && bounds.contains(under) && Paths.clearAir(level, p)) {
+                BlockPos land = under;
+                int cost = d + DIG;
+                while (rules.ladder(land.below()) && !gone.contains(land.below()) && bounds.contains(land.below())) {
+                    land = land.below();
+                    cost += LADDER_DOWN;
+                }
+                if (solidFloor(land.below()) && !lavaAt(land) && rules.mayStand(land)) relax(key, land, cost, Move.DIG);
             }
         }
     }

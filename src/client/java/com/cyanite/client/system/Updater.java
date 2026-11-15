@@ -52,7 +52,7 @@ public final class Updater {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final String MOD_ID = "cyanite_client";
     private static final Pattern REPO = Pattern.compile("github\\.com/([\\w.-]+/[\\w.-]+?)(?:\\.git)?/?$");
-    private static final HttpClient HTTP = HttpClient.newBuilder()
+    static final HttpClient HTTP = HttpClient.newBuilder()
         .followRedirects(HttpClient.Redirect.NORMAL)
         .connectTimeout(Duration.ofSeconds(10))
         .build();
@@ -225,7 +225,7 @@ public final class Updater {
         }
     }
 
-    private static String sha256(Path file) throws Exception {
+    static String sha256(Path file) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         try (InputStream in = Files.newInputStream(file)) {
             byte[] buffer = new byte[64 * 1024];
@@ -234,7 +234,7 @@ public final class Updater {
         return HexFormat.of().formatHex(digest.digest());
     }
 
-    private static HttpRequest request(String url, String accept, ModContainer mod) {
+    static HttpRequest request(String url, String accept, ModContainer mod) {
         return HttpRequest.newBuilder(URI.create(url))
             .header("Accept", accept)
             .header("User-Agent", "Cyanite-Client/" + mod.getMetadata().getVersion().getFriendlyString())
@@ -243,7 +243,7 @@ public final class Updater {
             .build();
     }
 
-    private static JsonObject asset(JsonObject release, String name) {
+    static JsonObject asset(JsonObject release, String name) {
         if (!(release.get("assets") instanceof JsonElement assets) || !assets.isJsonArray()) return null;
         for (JsonElement element : assets.getAsJsonArray()) {
             if (element.isJsonObject() && name.equals(element.getAsJsonObject().get("name").getAsString())) {
@@ -251,6 +251,12 @@ public final class Updater {
             }
         }
         return null;
+    }
+
+    /** The GitHub page of Cyanite's release {@code version}, or null when the jar doesn't say where it's published. */
+    public static String releasePage(String version) {
+        String repo = FabricLoader.getInstance().getModContainer(MOD_ID).map(Updater::repo).orElse(null);
+        return repo == null ? null : "https://github.com/" + repo + "/releases/tag/v" + version;
     }
 
     /** "owner/name" from the jar's sources link, or null when it isn't a GitHub repository. */
@@ -261,7 +267,7 @@ public final class Updater {
     }
 
     /** The jar Cyanite was loaded from, or null when it didn't come from one (a dev run, a bundled copy). */
-    private static Path runningJar(ModContainer mod) {
+    static Path runningJar(ModContainer mod) {
         ModOrigin origin = mod.getOrigin();
         if (origin.getKind() != ModOrigin.Kind.PATH) return null;
         List<Path> paths = origin.getPaths();

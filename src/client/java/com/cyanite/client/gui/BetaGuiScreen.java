@@ -10,6 +10,7 @@ import com.cyanite.client.system.Category;
 import com.cyanite.client.system.Module;
 import com.cyanite.client.system.Modules;
 import com.cyanite.client.system.setting.Setting;
+import com.cyanite.client.visuals.Visuals;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.mojang.blaze3d.platform.Window;
@@ -49,8 +50,9 @@ public class BetaGuiScreen extends Screen {
     private static final int NAV_GAP = 3;
     /** A compact panel, not the whole screen; it widens only for the pages that need the room. */
     private static final int WIDTH = 600;
-    private static final int HEIGHT = 380;
-    private static final Map<String, int[]> WIDE_PAGES = Map.of("area", new int[] {780, 410}, "macros", new int[] {900, 410});
+    private static final int HEIGHT = 396;
+    private static final Map<String, int[]> WIDE_PAGES = Map.of("area", new int[] {780, 410}, "macros", new int[] {900, 410},
+        "visuals", new int[] {720, 430});
     private static final int LIST_HEAD = 30;
     private static final int ROW = 26;
     private static final int GOLD = 0xFFFFC83D;
@@ -125,6 +127,7 @@ public class BetaGuiScreen extends Screen {
     public BetaGuiScreen(Screen parent) {
         super(Component.literal("Cyanite Client"));
         this.parent = parent;
+        navs.add(new Nav("visuals", "Visuals", Kind.PAGE, null, new VisualsPage(), null));
         navs.add(new Nav("fav", "Favourites", Kind.FAVOURITES, null, null, null));
         navs.add(new Nav("active", "Switched on", Kind.ACTIVE, null, null, null));
         for (Category c : Category.values()) navs.add(new Nav("cat:" + c.name(), c.title, Kind.CATEGORY, c, null, "Modules"));
@@ -136,7 +139,7 @@ public class BetaGuiScreen extends Screen {
         navs.add(new Nav("area", "Area Miner", Kind.PAGE, null, new AreaMinerPage(), "Tools"));
         navs.add(new Nav("schematic", "Schematic Builder", Kind.PAGE, null, new SchematicBuilderPage(), "Tools"));
         navs.add(new Nav("macros", "Macros", Kind.PAGE, null, new MacrosPage(), "Tools"));
-        nav = navs.stream().filter(n -> n.key.equals(lastNav) && n.kind != Kind.HUD).findFirst().orElse(navs.get(2));
+        nav = navs.stream().filter(n -> n.key.equals(lastNav) && n.kind != Kind.HUD).findFirst().orElse(navByKey("cat:" + Category.values()[0].name()));
         selected = lastSelected;
         search.setPadLeft(17);
     }
@@ -144,6 +147,11 @@ public class BetaGuiScreen extends Screen {
     /** Beta UI was just switched on from the classic menu: open on Look & feel, where that switch lives. */
     static void openOnLook() {
         lastNav = "look";
+    }
+
+    /** The title screen's account chip: open on Accounts. */
+    static void openOnAccounts() {
+        lastNav = "accounts";
     }
 
     // ---- The tour
@@ -286,7 +294,7 @@ public class BetaGuiScreen extends Screen {
     public void render(GuiGraphics g, int guiMouseX, int guiMouseY, float partialTick) {
         // Beta UI switched off from Look & feel: straight back to the classic menu, on its GUI tab.
         if (!GuiSettings.BETA.get()) {
-            minecraft.setScreen(new ClickGuiScreen(parent, 2));
+            minecraft.setScreen(new ClickGuiScreen(parent, 3));
             return;
         }
         long now = System.nanoTime();
@@ -572,7 +580,7 @@ public class BetaGuiScreen extends Screen {
                 int countW = Text.width(count);
                 int countX = wx + SIDE - 11 - countW;
                 // Somewhere with modules on gets its count in an accent pill, so you can see at a glance where things are on.
-                boolean lit = n.kind == Kind.CATEGORY && count.contains("/") || n.kind == Kind.ACTIVE && !count.equals("0");
+                boolean lit = (n.kind == Kind.CATEGORY || n.kind == Kind.PAGE) && count.contains("/") || n.kind == Kind.ACTIVE && !count.equals("0");
                 if (lit) {
                     Render2D.pixels(g);
                     Render2D.rect(g, (countX - 4) * s, (y + 3) * s, (countW + 8) * s, (NAV_ROW - 6) * s, 4 * s, Theme.alpha(Theme.accent(), 42 * a));
@@ -594,8 +602,17 @@ public class BetaGuiScreen extends Screen {
                 long on = all.stream().filter(Module::isEnabled).count();
                 yield on > 0 ? on + "/" + all.size() : Integer.toString(all.size());
             }
+            case PAGE -> {
+                if (!n.key.equals("visuals")) yield null;
+                long on = Visuals.GROUPS.stream().filter(g -> g.enabled.get()).count();
+                yield on > 0 ? on + "/" + Visuals.GROUPS.size() : null;
+            }
             default -> null;
         };
+    }
+
+    private Nav navByKey(String key) {
+        return navs.stream().filter(n -> n.key.equals(key)).findFirst().orElseThrow();
     }
 
     private Nav navAt(double mouseX, double mouseY) {
@@ -1061,7 +1078,11 @@ public class BetaGuiScreen extends Screen {
             if (Text.width(next) > room && !line.isEmpty()) {
                 lines.add(line.toString());
                 line = new StringBuilder(word);
-                if (lines.size() == maxLines) break;
+                if (lines.size() == maxLines) {
+                    // More words than lines: the last one ends in "..." rather than mid-sentence.
+                    lines.set(maxLines - 1, fit(next, room));
+                    return lines;
+                }
             } else {
                 line = new StringBuilder(next);
             }
@@ -1112,7 +1133,7 @@ public class BetaGuiScreen extends Screen {
         String active = Modules.getAll().stream().filter(Module::isEnabled).count() + " on";
         int ax = closeX - 14 - Text.width(active);
         if (button == 0 && Page.inside(mx, my, ax - 4, wy + 6, Text.width(active) + 8, 18)) {
-            go(navs.get(1));
+            go(navByKey("active"));
             return true;
         }
         if (search.mouseClicked(mx, my)) return true;

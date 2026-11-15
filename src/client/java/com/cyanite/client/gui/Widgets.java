@@ -7,6 +7,10 @@ import net.minecraft.client.gui.GuiGraphics;
 final class Widgets {
     static final int TOGGLE_W = 14;
     static final int TOGGLE_H = 8;
+    /** The classic menu's check box, in UI units. */
+    private static final int BOX = 8;
+    /** Key caps and value pills, in UI units. */
+    static final int CAP_H = Text.CAP + 5;
 
     private Widgets() {
     }
@@ -61,8 +65,20 @@ final class Widgets {
         }
     }
 
-    /** On/off switch at (x, y) in GUI units. {@code on} is animated, 0 to 1. */
+    /** The classic, Meteor-style menu rather than the Beta UI: check boxes, key caps and value pills. */
+    static boolean classic() {
+        return !GuiSettings.BETA.get();
+    }
+
+    /**
+     * On/off at (x, y) in GUI units, filling TOGGLE_W by TOGGLE_H. {@code on} is animated, 0 to 1.
+     * A check box in the classic menu, a switch in the Beta UI.
+     */
     static void toggle(GuiGraphics g, int x, int y, float on, float alpha) {
+        if (classic()) {
+            checkbox(g, x + TOGGLE_W - BOX, y + (TOGGLE_H - BOX) / 2, on, alpha);
+            return;
+        }
         int s = Render2D.scale();
         int accent = Theme.accent();
         int tw = TOGGLE_W * s;
@@ -77,6 +93,71 @@ final class Widgets {
         Render2D.rect(g, tx, ty, tw, th, th / 2, Theme.fade(Theme.mix(Theme.TRACK, accent, on), alpha));
         Render2D.rect(g, kx, ty + s, knob, knob, knob / 2, Theme.fade(Theme.mix(Theme.TEXT_DIM, 0xFFFFFFFF, on), alpha));
         Render2D.end(g);
+    }
+
+    /** A Meteor-style check box at (x, y) in UI units: an outlined square, filled with the accent and ticked when on. */
+    static void checkbox(GuiGraphics g, int x, int y, float on, float alpha) {
+        int s = Render2D.scale();
+        int accent = Theme.accent();
+        int px = x * s;
+        int py = y * s;
+        int n = BOX * s;
+        int r = Math.round(Math.min(Theme.radius(), 2) * s);
+        int edge = Math.max(1, s / 2);
+
+        Render2D.pixels(g);
+        Render2D.glow(g, px, py, n, n, r, 4 * s, Theme.alpha(accent, on * 80 * Theme.glow() * alpha));
+        Render2D.rect(g, px, py, n, n, r, Theme.fade(Theme.mix(Theme.EDGE, accent, on), alpha));
+        Render2D.rect(g, px + edge, py + edge, n - 2 * edge, n - 2 * edge, Math.max(0, r - edge),
+            Theme.fade(Theme.mix(Theme.FIELD, accent, on), alpha));
+        if (on > 0.02f) Render2D.check(g, px + n / 2, py + n / 2, Theme.alpha(0xFFFFFF, on * 255 * alpha));
+        Render2D.end(g);
+    }
+
+    /**
+     * A key name in a key cap, its right edge at {@code right} and its middle at {@code midY},
+     * in UI units. @return its width
+     */
+    static int keycap(GuiGraphics g, int right, int midY, String key, int textColor, float alpha) {
+        int w = Text.width(key) + 7;
+        int x = right - w;
+        int y = midY - CAP_H / 2;
+        int s = Render2D.scale();
+        int r = Math.round(Math.min(Theme.radius(), 2) * s);
+        int edge = Math.max(1, s / 2);
+
+        Render2D.pixels(g);
+        Render2D.rect(g, x * s, y * s, w * s, CAP_H * s, r, Theme.fade(Theme.EDGE, alpha));
+        // A deeper bottom edge, the way a key sits.
+        Render2D.rect(g, x * s + edge, y * s + edge, w * s - 2 * edge, CAP_H * s - 3 * edge, Math.max(0, r - edge),
+            Theme.fade(Theme.KEY, alpha));
+        Render2D.end(g);
+
+        Text.draw(g, key, x + 4, y + (CAP_H - Text.CAP) / 2, Theme.fade(textColor, alpha));
+        return w;
+    }
+
+    /**
+     * A setting's value in a dropdown pill with an arrow, right edge at {@code right}, middle at
+     * {@code midY}; {@code hover} lights its outline. @return its width
+     */
+    static int pill(GuiGraphics g, int right, int midY, String value, int textColor, float hover, float alpha) {
+        int w = Text.width(value) + 15;
+        int x = right - w;
+        int y = midY - CAP_H / 2;
+        int s = Render2D.scale();
+        int r = Math.round(Math.min(Theme.radius(), 2) * s);
+        int edge = Math.max(1, s / 2);
+
+        Render2D.pixels(g);
+        Render2D.rect(g, x * s, y * s, w * s, CAP_H * s, r, Theme.fade(Theme.mix(Theme.EDGE, Theme.accent(), hover * 0.6f), alpha));
+        Render2D.rect(g, x * s + edge, y * s + edge, w * s - 2 * edge, CAP_H * s - 2 * edge, Math.max(0, r - edge),
+            Theme.fade(Theme.FIELD, alpha));
+        Render2D.chevron(g, (right - 5) * s, midY * s, 0, Theme.fade(Theme.mix(Theme.TEXT_FAINT, Theme.TEXT_DIM, hover), alpha));
+        Render2D.end(g);
+
+        Text.draw(g, value, x + 4, y + (CAP_H - Text.CAP) / 2, Theme.fade(textColor, alpha));
+        return w;
     }
 
     /** The search icon: a ring with a handle, centred on (x, y) in UI units. */

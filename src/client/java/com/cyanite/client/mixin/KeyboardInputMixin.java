@@ -1,6 +1,7 @@
 package com.cyanite.client.mixin;
 
 import com.cyanite.client.modules.donut.DrillTester;
+import com.cyanite.client.modules.movement.AutoElytra;
 import com.cyanite.client.modules.render.Freecam;
 import com.cyanite.client.modules.world.AreaMiner;
 import com.cyanite.client.modules.world.BedrockBurrow;
@@ -39,6 +40,9 @@ public abstract class KeyboardInputMixin extends ClientInput {
         if (steering == null && autoMine != null) steering = autoMine.steering();
         com.cyanite.client.modules.world.SchematicBuilder builder = Modules.get(com.cyanite.client.modules.world.SchematicBuilder.class);
         if (steering == null && builder != null) steering = builder.steering();
+        // Auto Elytra: the jumps that open the elytra, and standing still at /ah.
+        AutoElytra elytra = Modules.get(AutoElytra.class);
+        if (steering == null && elytra != null) steering = elytra.steering();
         if (steering != null) {
             this.keyPresses = steering;
             this.moveVector = new Vec2(impulse(steering.left(), steering.right()), impulse(steering.forward(), steering.backward())).normalized();

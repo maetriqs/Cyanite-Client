@@ -33,9 +33,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Waypoints: marks you drop anywhere and find again. In the world each is a beam of light in its
@@ -90,7 +92,7 @@ public class Waypoints extends Module {
         public int color;
         public boolean hidden;
 
-        Waypoint(String name, int x, int y, int z, String dimension, int color, boolean hidden) {
+        public Waypoint(String name, int x, int y, int z, String dimension, int color, boolean hidden) {
             this.name = name;
             this.x = x;
             this.y = y;
@@ -154,6 +156,41 @@ public class Waypoints extends Module {
     /** Call after changing a waypoint's name, colour or hidden flag, to keep it. */
     public void changed() {
         save();
+    }
+
+    /** The list a singleplayer world's waypoints are kept under, by the world's name. */
+    public static String worldKey(String levelName) {
+        return "singleplayer:" + levelName;
+    }
+
+    /** How many of these a server's list (by address, or {@link #worldKey}) doesn't have yet: same spot, same name. */
+    public int countNew(String server, List<Waypoint> wps) {
+        load();
+        Set<String> have = new HashSet<>();
+        for (Waypoint wp : servers.getOrDefault(server, List.of())) have.add(same(wp));
+        int added = 0;
+        for (Waypoint wp : wps) if (have.add(same(wp))) added++;
+        return added;
+    }
+
+    /** Adds the ones a server's list doesn't have yet, copied from another client; returns how many. */
+    public int addAll(String server, List<Waypoint> wps) {
+        load();
+        List<Waypoint> list = servers.computeIfAbsent(server, k -> new ArrayList<>());
+        Set<String> have = new HashSet<>();
+        for (Waypoint wp : list) have.add(same(wp));
+        int added = 0;
+        for (Waypoint wp : wps) {
+            if (!have.add(same(wp))) continue;
+            list.add(wp);
+            added++;
+        }
+        if (added > 0) save();
+        return added;
+    }
+
+    private static String same(Waypoint wp) {
+        return wp.dimension + " " + wp.x + " " + wp.y + " " + wp.z + " " + wp.name.strip().toLowerCase(Locale.ROOT);
     }
 
     /** The colour a new waypoint gets: the next one round the palette. */
@@ -332,7 +369,7 @@ public class Waypoints extends Module {
 
     private String server() {
         if (mc.getCurrentServer() != null) return mc.getCurrentServer().ip;
-        if (mc.getSingleplayerServer() != null) return "singleplayer:" + mc.getSingleplayerServer().getWorldData().getLevelName();
+        if (mc.getSingleplayerServer() != null) return worldKey(mc.getSingleplayerServer().getWorldData().getLevelName());
         return "unknown";
     }
 

@@ -25,6 +25,9 @@ public abstract class CameraMixin {
     @Shadow
     protected abstract void setRotation(float yRot, float xRot);
 
+    @Shadow
+    public abstract Vec3 position();
+
     // Treat Freecam as third person, so your own player is drawn and the first-person hand isn't.
     @ModifyVariable(method = "setup", at = @At("HEAD"), argsOnly = true, ordinal = 0)
     private boolean cyanite$freecamDetached(boolean detached) {
@@ -57,6 +60,13 @@ public abstract class CameraMixin {
     private void cyanite$f5ThroughWalls(float distance, CallbackInfoReturnable<Float> cir) {
         F5Camera f5 = Modules.get(F5Camera.class);
         if (f5 != null && f5.clips()) cir.setReturnValue(distance);
+    }
+
+    // Cinematic's Smooth camera: first person eases over steps, jumps and landings. Before Freecam's, which wins.
+    @Inject(method = "setup", at = @At("TAIL"))
+    private void cyanite$cinematic(Level level, Entity entity, boolean detached, boolean mirrored, float partialTick, CallbackInfo ci) {
+        Vec3 eased = com.cyanite.client.modules.render.Cinematic.easeCamera(entity, position(), detached);
+        if (eased != null) setPosition(eased);
     }
 
     @Inject(method = "setup", at = @At("TAIL"))

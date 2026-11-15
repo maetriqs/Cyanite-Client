@@ -4,6 +4,7 @@ import com.cyanite.client.gui.Theme;
 import com.cyanite.client.gui.render.Render2D;
 import com.cyanite.client.gui.render.Text;
 import com.cyanite.client.system.macro.Macro;
+import com.cyanite.client.system.macro.MacroRecorder;
 import com.cyanite.client.system.macro.MacroRunner;
 import com.cyanite.client.system.macro.MacroStep;
 import com.google.gson.JsonArray;
@@ -17,7 +18,8 @@ import java.util.List;
 
 /**
  * Your macros, and the one running now. A macro's key starts it, and pressing the key again stops
- * it. One runs at a time: starting another stops the first.
+ * it. One runs at a time: starting another stops the first. A macro can also be recorded: what
+ * you do in game is added to it as blocks until you press its key or stop it in the menu.
  */
 public final class Macros {
     public static final List<Integer> GAPS = List.of(250, 500, 1000, 2000, 3000);
@@ -25,6 +27,7 @@ public final class Macros {
 
     private static final List<Macro> MACROS = new ArrayList<>();
     private static final MacroRunner RUNNER = new MacroRunner();
+    private static final MacroRecorder RECORDER = new MacroRecorder();
     private static final java.util.ArrayDeque<Heard> CHAT = new java.util.ArrayDeque<>();
     private static int gapMs = 500;
 
@@ -43,6 +46,7 @@ public final class Macros {
 
     public static void remove(Macro macro) {
         if (RUNNER.macro() == macro) RUNNER.stop();
+        if (RECORDER.macro() == macro) RECORDER.cancel();
         MACROS.remove(macro);
     }
 
@@ -57,6 +61,20 @@ public final class Macros {
         return RUNNER;
     }
 
+    public static MacroRecorder recorder() {
+        return RECORDER;
+    }
+
+    /** Starts recording into a macro, on the end of what's there. Nothing runs meanwhile. */
+    public static void record(Macro macro) {
+        RUNNER.stop();
+        RECORDER.start(macro);
+    }
+
+    public static void stopRecording() {
+        RECORDER.stop();
+    }
+
     /** Gap between one "Send" and the next, so the server's spam filter never sees a burst. */
     public static int gapMs() {
         return gapMs;
@@ -67,6 +85,7 @@ public final class Macros {
     }
 
     public static void start(Macro macro) {
+        RECORDER.stop();
         RUNNER.start(macro);
     }
 
@@ -76,6 +95,12 @@ public final class Macros {
 
     /** A key pressed in game, with no screen open: its macro starts, or stops if it's already running. */
     public static void onKey(int key) {
+        // While recording, the recorded macro's key ends it and no macro starts.
+        Macro recording = RECORDER.macro();
+        if (recording != null) {
+            if (recording.key != Macro.NO_KEY && recording.key == key) RECORDER.stop();
+            return;
+        }
         Macro running = RUNNER.macro();
         if (running != null && running.key == key) {
             RUNNER.stop();
@@ -91,6 +116,7 @@ public final class Macros {
 
     public static void tick() {
         RUNNER.tick();
+        RECORDER.tick();
     }
 
     public static void frame() {
@@ -120,31 +146,48 @@ public final class Macros {
         return false;
     }
 
-    /** A small bar at the top of the screen while a macro runs, saying where it's got to and how to stop it. */
+    /** A small bar at the top of the screen while a macro runs or records, saying where it's got to and how to stop it. */
     public static void drawHud(GuiGraphics g, int screenWidth) {
+        Macro recording = RECORDER.macro();
+        if (recording != null) {
+            int n = RECORDER.added();
+            String hint = recording.key == Macro.NO_KEY ? "  ·  stop it in the Macros menu" : "  ·  " + recording.keyName() + " stops";
+            bar(g, screenWidth, "Recording " + recording.name, "  " + n + (n == 1 ? " block" : " blocks"), "", hint, true);
+            return;
+        }
         Macro macro = RUNNER.macro();
         if (macro == null) return;
-        String head = "Macro: " + macro.name;
         String where = "";
         if (macro.repeat != 1) where += macro.repeat == 0 ? "  round " + (RUNNER.round() + 1) : "  round " + (RUNNER.round() + 1) + "/" + macro.repeat;
         MacroStep current = RUNNER.current();
         String step = current == null ? "" : "  " + current.summary();
         if (step.length() > 48) step = step.substring(0, 47) + "…";
         String hint = macro.key == Macro.NO_KEY ? "" : "  ·  " + macro.keyName() + " stops";
-        int w = Text.width(head) + Text.width(where) + Text.width(step) + Text.width(hint) + 14;
+        bar(g, screenWidth, "Macro: " + macro.name, where, step, hint, false);
+    }
+
+    private static void bar(GuiGraphics g, int screenWidth, String head, String where, String step, String hint, boolean recording) {
+        int dot = recording ? 9 : 0;
+        int w = dot + Text.width(head) + Text.width(where) + Text.width(step) + Text.width(hint) + 14;
         int x = (screenWidth - w) / 2;
         int y = 4;
         int h = Text.CAP + 8;
         int s = Render2D.scale();
-        int accent = Theme.accent();
+        int accent = recording ? Theme.DANGER : Theme.accent();
         Render2D.pixels(g);
         Render2D.glow(g, x * s, y * s, w * s, h * s, 3 * s, 6 * s, Theme.alpha(accent, 60 * Theme.glow()));
         Render2D.rect(g, x * s, y * s, w * s, h * s, 3 * s, 0xE6101217);
         Render2D.rect(g, x * s + 3 * s, (y + h) * s - Math.max(1, s / 2), w * s - 6 * s, Math.max(1, s / 2), 0, Theme.alpha(accent, 220));
+        if (recording) {
+            // The red light, blinking like a camera's.
+            int d = 5 * s;
+            int on = System.currentTimeMillis() / 600 % 2 == 0 ? 255 : 110;
+            Render2D.rect(g, (x + 7) * s, y * s + (h * s - d) / 2, d, d, d / 2, Theme.alpha(Theme.DANGER, on));
+        }
         Render2D.end(g);
-        int tx = x + 7;
+        int tx = x + 7 + dot;
         int ty = y + 4;
-        Text.draw(g, head, tx, ty, Theme.accentText());
+        Text.draw(g, head, tx, ty, recording ? Theme.TEXT : Theme.accentText());
         tx += Text.width(head);
         Text.draw(g, where, tx, ty, Theme.TEXT_FAINT);
         tx += Text.width(where);
@@ -171,6 +214,7 @@ public final class Macros {
 
         if (json.get("macros") instanceof JsonArray list) {
             RUNNER.stop();
+            RECORDER.cancel();
             MACROS.clear();
             for (JsonElement e : list) {
                 if (e instanceof JsonObject o && MACROS.size() < MAX_MACROS) MACROS.add(Macro.fromJson(o));
@@ -178,6 +222,7 @@ public final class Macros {
         } else if (json.get("list") instanceof JsonArray old) {
             // The first version: a key and some commands split with ";". Each becomes a Send step.
             RUNNER.stop();
+            RECORDER.cancel();
             MACROS.clear();
             for (JsonElement e : old) {
                 if (!(e instanceof JsonObject o) || !(o.get("text") instanceof JsonElement text) || !(o.get("key") instanceof JsonElement key)) continue;

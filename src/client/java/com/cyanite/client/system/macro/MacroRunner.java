@@ -11,22 +11,28 @@ import com.cyanite.client.system.Modules;
 import com.cyanite.client.system.Notify;
 import com.cyanite.client.system.Steer;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
@@ -82,6 +88,7 @@ public final class MacroRunner {
     private boolean looking;
     private volatile boolean chatMatched;
     private String chatNeedle;
+    private PlaceTarget placeTarget;
 
     /** Where the runner is in one list of blocks: the macro itself, or the inside of a loop or if. */
     private static final class Frame {
@@ -139,8 +146,13 @@ public final class MacroRunner {
         aim.randomness = 0.35;
     }
 
+    /** Keys "hold down key" blocks are holding, until "let go" or the end. */
+    private final java.util.Set<InputConstants.Key> heldKeys = new java.util.LinkedHashSet<>();
+
     /** Stops wherever it's got to and lets go of everything it was holding. */
     public void stop() {
+        for (InputConstants.Key key : heldKeys) KeyMapping.set(key, Keys.isHeld(key));
+        heldKeys.clear();
         macro = null;
         current = null;
         waiting = null;
@@ -164,7 +176,12 @@ public final class MacroRunner {
 
     /** How the macro wants the player to move this tick, or null when it isn't moving them. */
     public Input steering() {
-        return macro == null ? null : steering;
+        if (macro == null || steering == null) return null;
+        if (heldKeys.isEmpty()) return steering;
+        // A walk with sneak or sprint held down by a key block keeps them.
+        Input s = steering;
+        return new Input(s.forward(), s.backward(), s.left(), s.right(), s.jump(),
+            s.shift() || mc.options.keyShift.isDown(), s.sprint() || mc.options.keySprint.isDown());
     }
 
     /** Whether vanilla should treat attack as held: while mining or holding the attack key. */
@@ -196,11 +213,24 @@ public final class MacroRunner {
     public void tick() {
         if (macro == null) return;
         LocalPlayer player = mc.player;
-        if (player == null || player != owner) {
-            fail("You died or changed worlds");
+        if (player == null) {
+            fail("You left the world");
             return;
         }
+        if (player.isDeadOrDying()) {
+            fail("You died");
+            return;
+        }
+        // Opening a menu lets go of every key, so held ones are held again once it's shut.
+        if (mc.screen == null) for (InputConstants.Key key : heldKeys) KeyMapping.set(key, true);
         long now = System.currentTimeMillis();
+        if (player != owner) {
+            // A portal or a /warp to another world gives you a new player: carry on with it, and
+            // start the step under way again from where you are now.
+            owner = player;
+            if (current != null) beginAction(current, player, now);
+            if (macro == null) return;
+        }
         if (current != null) {
             stepTicks++;
             if (run(current, player, now)) finishAction();
@@ -376,6 +406,7 @@ public final class MacroRunner {
             case HEALTH -> compare(player.getHealth(), c.text("op"), c.number("amount"));
             case HUNGER -> compare(player.getFoodData().getFoodLevel(), c.text("op"), c.number("amount"));
             case Y_LEVEL -> compare(player.getY(), c.text("op"), c.number("amount"));
+            case NEAR -> c.pos("pos") != null && player.position().distanceTo(Vec3.atBottomCenterOf(c.pos("pos"))) <= c.number("range");
             case INVENTORY_FULL -> player.getInventory().getFreeSlot() < 0;
             case HOLDING -> matchesItem(player.getMainHandItem(), c.text("item"));
             case HAS_ITEM -> countItems(player, c.text("item")) >= c.number("count");
@@ -480,6 +511,15 @@ public final class MacroRunner {
                 }
                 lookAt(visiblePoint(pos, player));
             }
+            case PLACE -> {
+                BlockPos pos = step.pos("pos");
+                if (pos == null) {
+                    fail("\"" + step.summary() + "\" has no block set");
+                    return;
+                }
+                placeTarget = placeTarget(pos, step.text("side"), player);
+                if (placeTarget != null) lookAt(placeTarget.point());
+            }
             case WAIT_CHAT -> {
                 chatNeedle = step.text("text").strip().toLowerCase(Locale.ROOT);
                 chatMatched = false;
@@ -545,6 +585,37 @@ public final class MacroRunner {
                 steering = null;
                 return stepTicks - actedAt >= 3;
             }
+            case KEY_PRESS -> {
+                if (screen && actedAt < 0) return pause();
+                InputConstants.Key key = MacroStep.key(step.text("key"));
+                if (key == null) {
+                    fail("No key called \"" + step.text("key") + "\"");
+                    return false;
+                }
+                if (actedAt < 0) {
+                    KeyMapping.set(key, true);
+                    KeyMapping.click(key);
+                    actedAt = stepTicks;
+                    return false;
+                }
+                if (stepTicks - actedAt < 2) return false;
+                if (!heldKeys.contains(key)) KeyMapping.set(key, Keys.isHeld(key));
+                return true;
+            }
+            case KEY_DOWN, KEY_UP -> {
+                InputConstants.Key key = MacroStep.key(step.text("key"));
+                if (key == null) {
+                    fail("No key called \"" + step.text("key") + "\"");
+                    return false;
+                }
+                if (step.type == MacroStep.Type.KEY_DOWN) {
+                    heldKeys.add(key);
+                    if (!screen) KeyMapping.set(key, true);
+                } else if (heldKeys.remove(key)) {
+                    KeyMapping.set(key, Keys.isHeld(key));
+                }
+                return true;
+            }
             case HOLD -> {
                 if (screen) return pause();
                 if (elapsed >= step.number("seconds") * 1000) return true;
@@ -600,16 +671,75 @@ public final class MacroRunner {
                 if (elapsed > USE_TIMEOUT) fail("Couldn't get the crosshair on " + coords(pos));
                 return false;
             }
+            case PLACE -> {
+                if (screen && actedAt < 0) return pause();
+                BlockPos pos = step.pos("pos");
+                // Something's there already (it went down, or was there to start with): on to the next block.
+                if (!mc.level.getBlockState(pos).canBeReplaced()) return actedAt < 0 || stepTicks - actedAt >= 2;
+                if (actedAt >= 0) {
+                    if (stepTicks - actedAt > 10) fail("Nothing was placed at " + coords(pos) + " (holding a block? standing in the way?)");
+                    return false;
+                }
+                if (!inReach(player, pos)) {
+                    fail("Too far to place at " + coords(pos));
+                    return false;
+                }
+                if (placeTarget == null) {
+                    fail("Nothing next to " + coords(pos) + " to place against");
+                    return false;
+                }
+                if (aimedAt(placeTarget, pos) && aim.error() < 3) {
+                    KeyMapping.click(KeyBindingHelper.getBoundKeyOf(mc.options.keyUse));
+                    actedAt = stepTicks;
+                    looking = false;
+                    return false;
+                }
+                if (elapsed > USE_TIMEOUT) fail("Couldn't get the crosshair on the side to place at " + coords(pos));
+                return false;
+            }
             case SLOT -> {
                 player.getInventory().setSelectedSlot((int) step.number("slot") - 1);
                 return true;
+            }
+            case SWAP_HANDS -> {
+                if (screen) return pause();
+                if (actedAt < 0) {
+                    ClientPacketListener connection = mc.getConnection();
+                    if (connection != null && !player.isSpectator()) {
+                        connection.send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.SWAP_ITEM_WITH_OFFHAND, BlockPos.ZERO, Direction.DOWN));
+                    }
+                    actedAt = stepTicks;
+                    return false;
+                }
+                return stepTicks - actedAt >= 2;
             }
             case DROP -> {
                 player.drop(!step.text("amount").equals("One"));
                 return true;
             }
+            case OPEN_INVENTORY -> {
+                if (actedAt >= 0) return stepTicks - actedAt >= 2;
+                if (mc.screen instanceof AbstractContainerScreen<?>) return true;
+                if (screen) return false;
+                // What the inventory key does.
+                if (mc.gameMode.isServerControlledInventory()) {
+                    player.sendOpenInventory();
+                } else {
+                    mc.getTutorial().onOpenInventory();
+                    mc.setScreen(new InventoryScreen(player));
+                }
+                actedAt = stepTicks;
+                return false;
+            }
             case CLICK_SLOT -> {
-                return clickSlot(step, player, elapsed);
+                String button = step.text("button");
+                return clickSlot((int) step.number("slot"), button.equals("Right") ? 1 : 0,
+                    button.equals("Shift") ? ClickType.QUICK_MOVE : ClickType.PICKUP, player, elapsed);
+            }
+            case MENU_SWAP -> {
+                int key = List.of(MacroStep.HOTBAR_KEYS).indexOf(step.text("hotbar"));
+                // Number keys are buttons 0 to 8; the off hand is 40.
+                return clickSlot((int) step.number("slot"), key == 9 ? 40 : Math.max(0, key), ClickType.SWAP, player, elapsed);
             }
             case CLOSE -> {
                 if (mc.screen instanceof AbstractContainerScreen<?>) player.closeContainer();
@@ -650,24 +780,21 @@ public final class MacroRunner {
         return stepTicks - actedAt >= 2;
     }
 
-    private boolean clickSlot(MacroStep step, LocalPlayer player, long elapsed) {
+    private boolean clickSlot(int slot, int button, ClickType type, LocalPlayer player, long elapsed) {
         if (actedAt >= 0) return stepTicks - actedAt >= 3;
         if (!(mc.screen instanceof AbstractContainerScreen<?> screen)) {
-            if (elapsed > MENU_TIMEOUT) fail("No menu opened to click slot " + (int) step.number("slot") + " in");
+            if (elapsed > MENU_TIMEOUT) fail("No menu opened to click slot " + slot + " in");
             return false;
         }
         // Give the server a moment to fill the menu in before clicking.
         if (menuSeenAt < 0) menuSeenAt = stepTicks;
         if (stepTicks - menuSeenAt < 3) return false;
         AbstractContainerMenu menu = screen.getMenu();
-        int slot = (int) step.number("slot");
         if (slot >= menu.slots.size()) {
             fail("This menu has no slot " + slot + " (it has " + menu.slots.size() + ")");
             return false;
         }
-        String button = step.text("button");
-        ClickType type = button.equals("Shift") ? ClickType.QUICK_MOVE : ClickType.PICKUP;
-        mc.gameMode.handleInventoryMouseClick(menu.containerId, slot, button.equals("Right") ? 1 : 0, type, player);
+        mc.gameMode.handleInventoryMouseClick(menu.containerId, slot, button, type, player);
         actedAt = stepTicks;
         return false;
     }
@@ -799,6 +926,63 @@ public final class MacroRunner {
             if (hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(pos)) return point;
         }
         return centre;
+    }
+
+    /** The side of a neighbouring block to click so a new block lands at a spot, and where to look on it. */
+    private record PlaceTarget(BlockPos support, Direction face, Vec3 point) {
+    }
+
+    /**
+     * A neighbour of {@code pos} solid enough to place against, whose side facing {@code pos} the
+     * eye can see: the one the block asks for if it'll do, otherwise the most head-on. Chests and
+     * other menus come last, since clicking one opens it instead of placing.
+     */
+    private static PlaceTarget placeTarget(BlockPos pos, String side, LocalPlayer player) {
+        Vec3 eye = player.getEyePosition();
+        Vec3 centre = Vec3.atCenterOf(pos);
+        Direction wanted = side(side);
+        List<Direction> sides = new ArrayList<>(List.of(Direction.values()));
+        sides.sort(Comparator.comparingInt((Direction d) -> d == wanted ? 0 : 1)
+            .thenComparingInt(d -> mc.level.getBlockState(pos.relative(d)).getMenuProvider(mc.level, pos.relative(d)) != null ? 1 : 0)
+            .thenComparingDouble(d -> d.getStepX() * (eye.x - centre.x) + d.getStepY() * (eye.y - centre.y) + d.getStepZ() * (eye.z - centre.z)));
+        for (Direction d : sides) {
+            BlockPos support = pos.relative(d);
+            BlockState state = mc.level.getBlockState(support);
+            if (state.canBeReplaced() || state.getShape(mc.level, support).isEmpty()) continue;
+            // The middle of the support's real face, so chests, slabs and the like work too.
+            AABB box = state.getShape(mc.level, support).bounds().move(support);
+            Vec3 mid = box.getCenter();
+            Vec3 point = switch (d.getAxis()) {
+                case X -> new Vec3(d.getStepX() > 0 ? box.minX : box.maxX, mid.y, mid.z);
+                case Y -> new Vec3(mid.x, d.getStepY() > 0 ? box.minY : box.maxY, mid.z);
+                case Z -> new Vec3(mid.x, mid.y, d.getStepZ() > 0 ? box.minZ : box.maxZ);
+            };
+            Vec3 into = point.add(d.getStepX() * 0.05, d.getStepY() * 0.05, d.getStepZ() * 0.05);
+            BlockHitResult hit = mc.level.clip(new ClipContext(eye, into, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+            if (hit.getType() != HitResult.Type.BLOCK) continue;
+            // Grass or snow in the spot itself is fine to click too: the new block replaces it.
+            if (hit.getBlockPos().equals(support) && hit.getDirection() == d.getOpposite() || hit.getBlockPos().equals(pos)) {
+                return new PlaceTarget(support, d.getOpposite(), point);
+            }
+        }
+        return null;
+    }
+
+    private static Direction side(String name) {
+        return switch (name) {
+            case "Below" -> Direction.DOWN;
+            case "Above" -> Direction.UP;
+            case "North" -> Direction.NORTH;
+            case "South" -> Direction.SOUTH;
+            case "West" -> Direction.WEST;
+            case "East" -> Direction.EAST;
+            default -> null;
+        };
+    }
+
+    private static boolean aimedAt(PlaceTarget target, BlockPos pos) {
+        return mc.hitResult instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK
+            && (hit.getBlockPos().equals(target.support()) && hit.getDirection() == target.face() || hit.getBlockPos().equals(pos));
     }
 
     private static boolean onBlock(BlockPos pos) {

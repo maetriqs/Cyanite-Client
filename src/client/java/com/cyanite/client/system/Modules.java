@@ -14,6 +14,7 @@ import com.cyanite.client.modules.combat.AutoTotem;
 import com.cyanite.client.modules.combat.Criticals;
 import com.cyanite.client.modules.combat.KillAura;
 import com.cyanite.client.modules.combat.TriggerBot;
+import com.cyanite.client.modules.donut.AuctionSniper;
 import com.cyanite.client.modules.donut.AutoSell;
 import com.cyanite.client.modules.donut.BaseAlert;
 import com.cyanite.client.modules.donut.BountyBalance;
@@ -36,6 +37,7 @@ import com.cyanite.client.modules.misc.DiscordPresence;
 import com.cyanite.client.modules.misc.MessageLogger;
 import com.cyanite.client.modules.misc.NameProtect;
 import com.cyanite.client.modules.misc.Pets;
+import com.cyanite.client.modules.movement.AutoElytra;
 import com.cyanite.client.modules.movement.AutoTrident;
 import com.cyanite.client.modules.movement.AutoWalk;
 import com.cyanite.client.modules.movement.BoatFly;
@@ -57,6 +59,7 @@ import com.cyanite.client.modules.player.FastPlace;
 import com.cyanite.client.modules.player.InventoryMove;
 import com.cyanite.client.modules.render.BlockESP;
 import com.cyanite.client.modules.render.Breadcrumbs;
+import com.cyanite.client.modules.render.Cinematic;
 import com.cyanite.client.modules.render.Lyrics;
 import com.cyanite.client.modules.render.ESP;
 import com.cyanite.client.modules.render.FovChanger;
@@ -68,6 +71,7 @@ import com.cyanite.client.modules.render.Nametags;
 import com.cyanite.client.modules.render.NoFog;
 import com.cyanite.client.modules.render.NoHurtCam;
 import com.cyanite.client.modules.render.Search;
+import com.cyanite.client.modules.render.SeedXray;
 import com.cyanite.client.modules.render.StorageESP;
 import com.cyanite.client.modules.render.PearlESP;
 import com.cyanite.client.modules.render.VillagerESP;
@@ -143,6 +147,7 @@ public final class Modules {
         register(new AutoWalk());
         register(new Jesus());
         register(new AutoTrident());
+        register(new AutoElytra());
         register(new Spider());
         register(new NoSlow());
         register(new SafeWalk());
@@ -156,10 +161,13 @@ public final class Modules {
         register(new Search());
         register(new BlockESP());
         register(new Xray());
+        register(new SeedXray());
         register(new Nametags());
         register(new Freecam());
         register(new Zoom());
         register(new FovChanger());
+        register(new Cinematic());
+        register(new com.cyanite.client.modules.render.AcidMode());
         register(new Waypoints());
         register(new Breadcrumbs());
         register(new Lyrics());
@@ -209,6 +217,8 @@ public final class Modules {
         register(new com.cyanite.client.modules.donut.HiddenPlayerFinder());
         register(new com.cyanite.client.modules.donut.ChunkChangeFinder());
         register(new com.cyanite.client.modules.donut.LeakFinder());
+        register(new com.cyanite.client.modules.donut.DeepslateBypass());
+        register(new com.cyanite.client.modules.donut.SoundEsp());
         register(new FakePay());
         register(new ScoreboardSpoof());
         register(new SpawnerFinder());
@@ -216,6 +226,7 @@ public final class Modules {
         register(new DepthAlert());
         register(new BaseAlert());
         register(new AutoSell());
+        register(new AuctionSniper());
         register(new DrillLogger());
         register(new DrillTester());
         register(new BountyBalance());
@@ -250,13 +261,23 @@ public final class Modules {
         return count;
     }
 
+    /** The start of the client tick, before your clicks and movement: the modules that tick early. */
+    public static void preTick() {
+        tick(true);
+    }
+
+    /** The end of the client tick: every other module. */
     public static void tick() {
+        tick(false);
+    }
+
+    private static void tick(boolean early) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null) return;
         WorldScan.next();
 
         for (Module module : ALL) {
-            if (!module.isEnabled()) continue;
+            if (!module.isEnabled() || module.ticksEarly() != early) continue;
             // One broken module shouldn't take the rest down with it, or crash the game.
             long start = System.nanoTime();
             try {
@@ -357,8 +378,12 @@ public final class Modules {
 
     public static void onKey(int key) {
         for (Module module : ALL) {
-            if (module.bind().isBound() && module.bind().get() == key) module.toggle();
-            else if (module.isEnabled()) module.onKey(key);
+            if (module.bind().isBound() && module.bind().get() == key) {
+                module.toggle();
+                Macros.recorder().moduleKey(module);
+            } else if (module.isEnabled()) {
+                module.onKey(key);
+            }
         }
     }
 }

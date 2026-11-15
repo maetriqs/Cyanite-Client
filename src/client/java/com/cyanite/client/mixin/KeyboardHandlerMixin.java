@@ -36,7 +36,9 @@ public class KeyboardHandlerMixin {
             ci.cancel();
             return;
         }
+        if (action == GLFW.GLFW_RELEASE) Macros.recorder().keyReleased(event.key());
         if (action != GLFW.GLFW_PRESS || Minecraft.getInstance().screen != null) return;
+        Macros.recorder().keyPressed(event.key());
         Modules.onKey(event.key());
         Macros.onKey(event.key());
     }

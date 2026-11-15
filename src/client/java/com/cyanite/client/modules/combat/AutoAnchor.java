@@ -58,6 +58,11 @@ public class AutoAnchor extends Module {
     }
 
     @Override
+    protected boolean ticksEarly() {
+        return true;
+    }
+
+    @Override
     public void onTick() {
         if (anchor == null) return;
         if (wait > 0) {

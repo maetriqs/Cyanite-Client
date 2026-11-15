@@ -68,8 +68,8 @@ public class LeakFinder extends Module {
     private final BoolSetting sound = add(new BoolSetting("Sound", true));
     private final EspStyle style = new EspStyle(true);
 
-    /** What a block entity is, for its colour and which toggle it's under. */
-    private enum Kind {
+    /** What a block entity is, for its colour and which toggle it's under (Deepslate Bypass's too). */
+    enum Kind {
         SPAWNER(0xFF5050, true),
         CHEST(0xF5C542, true),
         BARREL(0xA8743F, true),
@@ -279,8 +279,9 @@ public class LeakFinder extends Module {
 
     private String why(Found f) {
         if (!f.hidden()) return "Not hidden: the client has it";
-        String as = mc.level.hasChunkAt(f.pos())
-            ? ", hidden as " + mc.level.getBlockState(f.pos()).getBlock().getName().getString().toLowerCase(Locale.ROOT)
+        // What the server said, not what the client has: Deepslate Bypass may have put the real one there.
+        String as = f.disguise() != null
+            ? ", hidden as " + f.disguise().getBlock().getName().getString().toLowerCase(Locale.ROOT)
             : ", hidden";
         return switch (f.source()) {
             case CHUNK -> "Named in the chunk" + as;

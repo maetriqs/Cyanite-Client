@@ -1,5 +1,6 @@
 package com.cyanite.client.gui;
 
+import com.cyanite.client.config.Imports;
 import com.cyanite.client.config.Profiles;
 import com.cyanite.client.gui.render.Render2D;
 import com.cyanite.client.gui.render.Text;
@@ -33,6 +34,8 @@ final class ProfilesPage extends Page {
     private final Map<String, Float> hover = new HashMap<>();
 
     private List<Profiles.Entry> entries = List.of();
+    /** Whether another client's folder (Meteor, Wurst, Xaero) is here, for the Import button. */
+    private boolean importFound;
     private int scroll;
     private int visibleRows;
     private int x;
@@ -54,6 +57,7 @@ final class ProfilesPage extends Page {
 
     private void refresh() {
         entries = Profiles.list();
+        importFound = Imports.anyPresent();
         scroll = Math.max(0, Math.min(scroll, entries.size() - visibleRows));
     }
 
@@ -82,8 +86,14 @@ final class ProfilesPage extends Page {
         textButton(g, "open", open, openX, y + (HEADER - Text.CAP) / 2, mouseX, mouseY, dt, a,
             Theme.TEXT_FAINT, Theme.accentText(), this::openFolder);
         String paste = "Paste";
-        textButton(g, "paste", paste, openX - 10 - Text.width(paste), y + (HEADER - Text.CAP) / 2, mouseX, mouseY, dt, a,
+        int pasteX = openX - 10 - Text.width(paste);
+        textButton(g, "paste", paste, pasteX, y + (HEADER - Text.CAP) / 2, mouseX, mouseY, dt, a,
             Theme.TEXT_FAINT, Theme.accentText(), this::paste);
+        if (importFound) {
+            String importing = "Import";
+            textButton(g, "import", importing, pasteX - 10 - Text.width(importing), y + (HEADER - Text.CAP) / 2, mouseX, mouseY, dt, a,
+                Theme.TEXT_FAINT, Theme.accentText(), this::importOthers);
+        }
 
         int fieldY = y + HEADER + PAD;
         int fieldW = W - PAD * 2 - SAVE_W - 4;
@@ -277,6 +287,12 @@ final class ProfilesPage extends Page {
         }
         setStatus("Added " + added.name() + ": Load puts it on", false);
         refresh();
+    }
+
+    /** Asks, then copies other clients' setups in (Meteor, Wurst, Xaero's waypoints); the menu comes back once it's answered. */
+    private void importOthers() {
+        Minecraft mc = Minecraft.getInstance();
+        mc.setScreen(new ImportScreen(mc.screen));
     }
 
     private void openFolder() {

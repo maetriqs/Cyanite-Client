@@ -2,6 +2,8 @@ package com.cyanite.client.gui.render;
 
 import com.cyanite.client.system.setting.ColorSetting;
 import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.textures.FilterMode;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.RenderPipelines;
@@ -19,6 +21,7 @@ import java.util.Map;
 public final class Render2D {
     private static final Map<Long, Identifier> SHAPES = new HashMap<>();
     private static final Map<Integer, Identifier> CHEVRONS = new HashMap<>();
+    private static final Map<Integer, Identifier> CHECKS = new HashMap<>();
     private static final int FADE_WIDTH = 128;
     private static Identifier fade;
     private static Identifier hue;
@@ -134,6 +137,20 @@ public final class Render2D {
         g.blit(RenderPipelines.GUI_TEXTURED, fade, x, y, 0, 0, w, h, FADE_WIDTH, 1, FADE_WIDTH, 1, color);
     }
 
+    private static Identifier ramp;
+
+    /** A straight blend from {@code left} to {@code right}, across. */
+    public static void gradientRight(GuiGraphics g, int x, int y, int w, int h, int left, int right) {
+        if (w <= 0 || h <= 0) return;
+        if (ramp == null) {
+            NativeImage img = new NativeImage(FADE_WIDTH, 1, false);
+            for (int i = 0; i < FADE_WIDTH; i++) img.setPixel(i, 0, white(1f - i / (FADE_WIDTH - 1f)));
+            ramp = upload("ramp", img);
+        }
+        g.fill(x, y, x + w, y + h, right);
+        g.blit(RenderPipelines.GUI_TEXTURED, ramp, x, y, 0, 0, w, h, FADE_WIDTH, 1, FADE_WIDTH, 1, left);
+    }
+
     /** A strip running through every hue, left to right. */
     public static void hueBar(GuiGraphics g, int x, int y, int w, int h, int tint) {
         if (w <= 0 || h <= 0) return;
@@ -160,6 +177,14 @@ public final class Render2D {
         g.pose().rotate(angle);
         g.blit(RenderPipelines.GUI_TEXTURED, tex, -n / 2, -n / 2, 0, 0, n, n, n, n, color);
         g.pose().popMatrix();
+    }
+
+    /** A check mark centred on (cx, cy), six units across. */
+    public static void check(GuiGraphics g, int cx, int cy, int color) {
+        int s = scale();
+        Identifier tex = CHECKS.computeIfAbsent(s, Render2D::bakeCheck);
+        int n = 6 * s;
+        g.blit(RenderPipelines.GUI_TEXTURED, tex, cx - n / 2, cy - n / 2, 0, 0, n, n, n, n, color);
     }
 
     private static Identifier shape(int r, int blur) {
@@ -212,6 +237,24 @@ public final class Render2D {
         return upload("chevron_" + s, img);
     }
 
+    private static Identifier bakeCheck(int s) {
+        int n = 6 * s;
+        float hw = Math.max(0.8f, 0.07f * n);
+        float ax = 0.14f * n, ay = 0.52f * n;
+        float bx = 0.40f * n, by = 0.78f * n;
+        float cx = 0.88f * n, cy = 0.24f * n;
+
+        NativeImage img = new NativeImage(n, n, false);
+        for (int py = 0; py < n; py++) {
+            for (int px = 0; px < n; px++) {
+                float x = px + 0.5f, y = py + 0.5f;
+                float d = Math.min(segment(x, y, ax, ay, bx, by), segment(x, y, bx, by, cx, cy));
+                img.setPixel(px, py, white(clamp(hw - d + 0.5f)));
+            }
+        }
+        return upload("check_" + s, img);
+    }
+
     private static float segment(float px, float py, float ax, float ay, float bx, float by) {
         float vx = bx - ax, vy = by - ay;
         float t = clamp(((px - ax) * vx + (py - ay) * vy) / (vx * vx + vy * vy));
@@ -219,9 +262,20 @@ public final class Render2D {
         return (float) Math.sqrt(dx * dx + dy * dy);
     }
 
-    static Identifier upload(String name, NativeImage img) {
+    public static Identifier upload(String name, NativeImage img) {
+        return upload(name, img, false);
+    }
+
+    /** {@code smooth}: blended between pixels when drawn bigger or smaller, for soft shapes stretched across the screen. */
+    public static Identifier upload(String name, NativeImage img, boolean smooth) {
         Identifier id = Identifier.fromNamespaceAndPath("cyanite_client", "gui/" + name);
-        DynamicTexture texture = new DynamicTexture(() -> "cyanite_client:" + name, img);
+        DynamicTexture texture = smooth
+            ? new DynamicTexture(() -> "cyanite_client:" + name, img) {
+                {
+                    sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR);
+                }
+            }
+            : new DynamicTexture(() -> "cyanite_client:" + name, img);
         texture.upload();
         Minecraft.getInstance().getTextureManager().register(id, texture);
         return id;

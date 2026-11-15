@@ -26,6 +26,11 @@ public class TriggerBot extends Module {
     }
 
     @Override
+    protected boolean ticksEarly() {
+        return true;
+    }
+
+    @Override
     public void onTick() {
         if (mc.screen != null || mc.player.isUsingItem()) return;
         if (!(mc.hitResult instanceof EntityHitResult hit) || !(hit.getEntity() instanceof LivingEntity target)) return;

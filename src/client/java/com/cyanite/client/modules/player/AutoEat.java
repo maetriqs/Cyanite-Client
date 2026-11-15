@@ -33,6 +33,11 @@ public class AutoEat extends Module {
     }
 
     @Override
+    protected boolean ticksEarly() {
+        return true;
+    }
+
+    @Override
     public void onTick() {
         int food = mc.player.getFoodData().getFoodLevel();
 

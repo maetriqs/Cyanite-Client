@@ -79,7 +79,7 @@ public class VillagerESP extends Module {
     private final BoolSetting alert = add(new BoolSetting("Alert when found", false));
     private final BoolSetting toast = add(new BoolSetting("Toast", true));
     private final BoolSetting sound = add(new BoolSetting("Sound", true));
-    private final EspStyle style = new EspStyle(false);
+    private final EspStyle style = new EspStyle(false, true);
 
     private final Set<UUID> announced = new HashSet<>();
     private ClientLevel level;
@@ -87,6 +87,9 @@ public class VillagerESP extends Module {
     private int count;
 
     private record Shown(Entity entity, int rgb, String name, String detail) {
+    }
+
+    private record Placed(Shown shown, float x, float y, int w, double distance) {
     }
 
     public VillagerESP() {
@@ -208,7 +211,7 @@ public class VillagerESP extends Module {
         for (Shown s : shown(pt)) {
             // Boxes follow the entity's interpolated position so they don't lag behind at high frame rates.
             AABB box = s.entity.getBoundingBox().move(s.entity.getPosition(pt).subtract(s.entity.position()));
-            style.draw(render, box, s.rgb);
+            style.draw(render, s.entity, box, s.rgb);
         }
     }
 
@@ -218,26 +221,61 @@ public class VillagerESP extends Module {
         Vec3 eye = mc.player.getEyePosition(partialTick);
         double maxSq = labelRange.get() * labelRange.get();
         int unit = Render2D.scale();
+        int h = Text.CAP + PAD * 2;
+
+        List<Shown> near = new ArrayList<>();
         for (Shown s : shown(partialTick)) {
-            Vec3 top = s.entity.getPosition(partialTick).add(0, s.entity.getBbHeight() + 0.35, 0);
-            if (top.distanceToSqr(eye) > maxSq) continue;
-            double[] screen = Projection.toScreen(top);
+            if (labelSpot(s, partialTick).distanceToSqr(eye) <= maxSq) near.add(s);
+        }
+        // Nearest first: they keep their spot, and a farther label that would land on one moves up above it.
+        near.sort(Comparator.comparingDouble(s -> labelSpot(s, partialTick).distanceToSqr(eye)));
+        List<Placed> placed = new ArrayList<>();
+        for (Shown s : near) {
+            Vec3 spot = labelSpot(s, partialTick);
+            double[] screen = Projection.toScreen(spot);
             if (screen == null) continue;
+            double distance = spot.distanceTo(eye);
+            int w = labelWidth(s, distance);
+            float x = Math.round(screen[0]) / (float) unit - w / 2f;
+            float y = Math.round(screen[1]) / (float) unit - h;
+            for (boolean moved = true; moved; ) {
+                moved = false;
+                for (Placed p : placed) {
+                    if (x < p.x + p.w + 2 && p.x < x + w + 2 && y < p.y + h + 1 && p.y < y + h + 1) {
+                        y = p.y - h - 2;
+                        moved = true;
+                    }
+                }
+            }
+            placed.add(new Placed(s, x, y, w, distance));
+        }
+        // Farthest first, so nearer labels sit on top.
+        for (int i = placed.size() - 1; i >= 0; i--) {
+            Placed p = placed.get(i);
             g.pose().pushMatrix();
-            g.pose().translate(Math.round(screen[0]) / (float) unit, Math.round(screen[1]) / (float) unit);
-            drawLabel(g, s, top.distanceTo(eye));
+            g.pose().translate(p.x, p.y);
+            drawLabel(g, p.shown, p.w, p.distance);
             g.pose().popMatrix();
         }
     }
 
-    private void drawLabel(GuiGraphics g, Shown shown, double distance) {
+    private static Vec3 labelSpot(Shown s, float partialTick) {
+        return s.entity.getPosition(partialTick).add(0, s.entity.getBbHeight() + 0.35, 0);
+    }
+
+    private static int labelWidth(Shown shown, double distance) {
+        String detail = shown.detail == null ? "" : shown.detail;
+        return Text.width(shown.name) + (detail.isEmpty() ? 0 : 5 + Text.width(detail)) + 6 + Text.width(Math.round(distance) + "m") + PAD * 2;
+    }
+
+    /** The label for {@code shown}, {@code w} wide, its top left at (0, 0). */
+    private void drawLabel(GuiGraphics g, Shown shown, int w, double distance) {
         String name = shown.name;
         String detail = shown.detail == null ? "" : shown.detail;
         String dist = Math.round(distance) + "m";
-        int w = Text.width(name) + (detail.isEmpty() ? 0 : 5 + Text.width(detail)) + 6 + Text.width(dist) + PAD * 2;
         int h = Text.CAP + PAD * 2;
-        int x = -w / 2;
-        int y = -h;
+        int x = 0;
+        int y = 0;
         int s = Render2D.scale();
         int rgb = 0xFF000000 | shown.rgb;
         int corner = Math.round(Math.min(Theme.radius(), 3.5f) * s);

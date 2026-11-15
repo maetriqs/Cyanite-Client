@@ -24,18 +24,30 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
  * The live config in {@code .minecraft/cyanite/config.json}. It's loaded on startup and
- * written when the GUI closes and when the game exits. Profiles reuse the same format,
- * minus the window layout.
+ * written when the GUI closes, when the game exits, and a few seconds after a module switches
+ * outside the menu (a keybind, one stopping itself, a disconnect), so a crash doesn't lose it.
+ * Profiles reuse the same format, minus the window layout.
  */
 public final class Config {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    /** How long a change waits to be written, so a burst of them is one write. */
+    private static final long SAVE_DELAY = 3_000_000_000L;
+    private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH.mm.ss", Locale.ROOT);
+
+    /** When the waiting change gets written ({@link System#nanoTime}); 0 for none. */
+    private static volatile long saveAt;
+    /** Where an unreadable config was put aside on startup, to say so once the game's up; null for none. */
+    private static String keptBroken;
 
     private Config() {
     }
@@ -52,12 +64,54 @@ public final class Config {
         Path file = file();
         if (!Files.exists(file)) return;
 
-        JsonObject json = read(file);
-        if (json != null) apply(json, true);
+        JsonObject json;
+        try {
+            json = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+        } catch (Exception e) {
+            keepBroken(file, e);
+            return;
+        }
+        apply(json, true);
+    }
+
+    /**
+     * An unreadable config (a bad hand edit, a disk that filled up) is copied aside before anything
+     * saves over it, so every setting, bind and webhook in it can still be got back.
+     */
+    private static void keepBroken(Path file, Exception why) {
+        // Named like the game's crash reports, so the newest sorts last.
+        Path aside = file.resolveSibling("config.broken-" + LocalDateTime.now().format(STAMP) + ".json");
+        try {
+            Files.copy(file, aside, StandardCopyOption.REPLACE_EXISTING);
+            keptBroken = aside.getFileName().toString();
+            LOGGER.warn("Couldn't read {} ({}); started from defaults and kept it as {}", file.getFileName(), why.toString(), keptBroken);
+        } catch (IOException e) {
+            LOGGER.error("Couldn't keep a copy of the unreadable {}", file, e);
+        }
+    }
+
+    /** Once the game's up: says the config couldn't be read, if it couldn't. */
+    public static void reportBroken() {
+        if (keptBroken == null) return;
+        com.cyanite.client.system.Notify.send("Settings reset",
+            "Couldn't read config.json; a copy is in the cyanite folder", true, false, false);
+        keptBroken = null;
     }
 
     public static void save() {
+        saveAt = 0;
         write(file(), snapshot(true));
+    }
+
+    /** Writes the config a few seconds from now; another change before then pushes it back. Any thread. */
+    public static void saveSoon() {
+        saveAt = System.nanoTime() + SAVE_DELAY;
+    }
+
+    /** Once a client tick: writes the config once a change has waited long enough. */
+    public static void tick() {
+        long at = saveAt;
+        if (at != 0 && System.nanoTime() - at >= 0) save();
     }
 
     static JsonObject snapshot(boolean includeLayout) {
@@ -83,6 +137,7 @@ public final class Config {
             root.add("donut", DonutSmp.save());
             root.add("macros", Macros.save());
             root.addProperty("tutorialSeen", ClickGuiScreen.tutorialSeen());
+            root.add("importAsked", Imports.saveAsked());
             if (Profiles.active() != null) root.addProperty("profile", Profiles.active());
         }
         return root;
@@ -112,6 +167,7 @@ public final class Config {
             if (root.get("tutorialSeen") instanceof JsonElement seen && seen.isJsonPrimitive()) {
                 ClickGuiScreen.setTutorialSeen(seen.getAsBoolean());
             }
+            if (root.get("importAsked") instanceof JsonArray asked) Imports.loadAsked(asked);
             if (root.get("profile") instanceof JsonElement profile && profile.isJsonPrimitive()) {
                 Profiles.setActive(profile.getAsString());
             }
@@ -225,7 +281,7 @@ public final class Config {
         }
     }
 
-    static boolean write(Path file, JsonObject json) {
+    public static boolean write(Path file, JsonObject json) {
         try {
             Files.createDirectories(file.getParent());
             // Write beside the target and swap it in, so a crash mid-write can't eat the old file.

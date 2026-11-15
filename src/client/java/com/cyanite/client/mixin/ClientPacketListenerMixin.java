@@ -1,9 +1,11 @@
 package com.cyanite.client.mixin;
 
 import com.cyanite.client.modules.combat.PopCounter;
+import com.cyanite.client.modules.donut.AuctionSniper;
 import com.cyanite.client.modules.combat.Velocity;
 import com.cyanite.client.modules.donut.ChunkFinder;
 import com.cyanite.client.modules.donut.HiddenPlayerFinder;
+import com.cyanite.client.modules.donut.SoundEsp;
 import com.cyanite.client.modules.misc.AntiVanish;
 import com.cyanite.client.modules.movement.BoatFly;
 import com.cyanite.client.system.ChunkScanner;
@@ -14,9 +16,12 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
+import net.minecraft.network.protocol.game.ClientboundBlockDestructionPacket;
 import net.minecraft.network.protocol.game.ClientboundBlockEventPacket;
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket;
+import net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket;
 import net.minecraft.network.protocol.game.ClientboundDamageEventPacket;
 import net.minecraft.network.protocol.game.ClientboundEntityEventPacket;
 import net.minecraft.network.protocol.game.ClientboundEntityPositionSyncPacket;
@@ -27,6 +32,8 @@ import net.minecraft.network.protocol.game.ClientboundMoveVehiclePacket;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.network.protocol.game.ClientboundRotateHeadPacket;
 import net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundSetCursorItemPacket;
+import net.minecraft.network.protocol.game.ClientboundSoundEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.network.protocol.game.ClientboundTakeItemEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
@@ -198,5 +205,48 @@ public class ClientPacketListenerMixin {
     @Inject(method = "handleLevelEvent", at = @At("HEAD"))
     private void cyanite$chunkFinderLevelEvent(ClientboundLevelEventPacket packet, CallbackInfo ci) {
         if (Minecraft.getInstance().isSameThread()) ChunkFinder.onLevelEvent(packet.getType(), packet.getPos(), packet.getData());
+    }
+
+    // Sound ESP: sounds, and the events that make them, from under the ground. TAIL only runs on the game thread.
+    @Inject(method = "handleSoundEvent", at = @At("TAIL"))
+    private void cyanite$soundEsp(ClientboundSoundPacket packet, CallbackInfo ci) {
+        SoundEsp.onSound(packet.getSound(), packet.getSource(), packet.getX(), packet.getY(), packet.getZ());
+    }
+
+    @Inject(method = "handleSoundEntityEvent", at = @At("TAIL"))
+    private void cyanite$soundEspEntity(ClientboundSoundEntityPacket packet, CallbackInfo ci) {
+        SoundEsp.onEntitySound(packet.getSound(), packet.getSource(), packet.getId());
+    }
+
+    @Inject(method = "handleLevelEvent", at = @At("TAIL"))
+    private void cyanite$soundEspLevelEvent(ClientboundLevelEventPacket packet, CallbackInfo ci) {
+        SoundEsp.onLevelEvent(packet.getType(), packet.getPos(), packet.getData(), packet.isGlobalEvent());
+    }
+
+    @Inject(method = "handleBlockEvent", at = @At("TAIL"))
+    private void cyanite$soundEspBlockEvent(ClientboundBlockEventPacket packet, CallbackInfo ci) {
+        SoundEsp.onBlockEvent(packet.getPos(), packet.getBlock(), packet.getB0());
+    }
+
+    @Inject(method = "handleBlockDestruction", at = @At("TAIL"))
+    private void cyanite$soundEspCracking(ClientboundBlockDestructionPacket packet, CallbackInfo ci) {
+        SoundEsp.onCracking(packet.getPos(), packet.getProgress());
+    }
+
+    // Auction Sniper: the open menu changed, or the server set the cursor straight after a click. Only
+    // noted; it acts in the frame hook, once all of this frame's packets are in. TAIL only runs on the game thread.
+    @Inject(method = "handleContainerContent", at = @At("TAIL"))
+    private void cyanite$sniperPage(ClientboundContainerSetContentPacket packet, CallbackInfo ci) {
+        AuctionSniper.heard(packet.containerId(), -1);
+    }
+
+    @Inject(method = "handleContainerSetSlot", at = @At("TAIL"))
+    private void cyanite$sniperSlot(ClientboundContainerSetSlotPacket packet, CallbackInfo ci) {
+        AuctionSniper.heard(packet.getContainerId(), packet.getSlot());
+    }
+
+    @Inject(method = "handleSetCursorItem", at = @At("TAIL"))
+    private void cyanite$sniperCursor(ClientboundSetCursorItemPacket packet, CallbackInfo ci) {
+        AuctionSniper.heardCursor();
     }
 }

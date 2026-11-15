@@ -1,5 +1,6 @@
 package com.cyanite.client.system;
 
+import com.cyanite.client.config.Config;
 import com.cyanite.client.render.Render3D;
 import com.cyanite.client.system.setting.BoolSetting;
 import com.cyanite.client.system.setting.KeybindSetting;
@@ -92,6 +93,8 @@ public abstract class Module {
     }
 
     public void setEnabled(boolean enabled) {
+        // Most switches happen outside the menu (keybinds, a module stopping itself): written soon, not only on exit.
+        if (enabled != isWanted()) Config.saveSoon();
         if (!enabled) {
             held = false;
         } else if (Stealth.active() && hiddenInStealth()) {
@@ -138,8 +141,17 @@ public abstract class Module {
     protected void onDisable() {
     }
 
-    /** Runs at the end of every client tick while enabled and in a world. */
+    /** Runs at the end of every client tick while enabled and in a world (or at the start: {@link #ticksEarly}). */
     public void onTick() {
+    }
+
+    /**
+     * True for a module that attacks, uses or places from {@link #onTick}: it then ticks at the start
+     * of the client tick, before the player's movement goes out, where your own clicks happen. Sent
+     * after the movement (at the end of the tick) they're out of order, and Grim flags it (Post).
+     */
+    protected boolean ticksEarly() {
+        return false;
     }
 
     /** Runs once per frame, right after the mouse has turned the player, while enabled and in a world. */

@@ -30,6 +30,7 @@ public class Tracers extends Module {
     private final SliderSetting range = add(new SliderSetting("Range", 128, 16, 256, 8).format(v -> (int) (double) v + " blocks"));
     private final SliderSetting width = add(new SliderSetting("Width", 1.5, 1, 4, 0.5));
     private final BoolSetting glow = add(new BoolSetting("Glow", true));
+    private final BoolSetting fade = add(new BoolSetting("Fade", true));
 
     public Tracers() {
         super(Category.RENDER, "Tracers", "Lines to players and mobs, red when they're close");
@@ -45,7 +46,7 @@ public class Tracers extends Module {
             if (d > max) continue;
             Vec3 at = e.getPosition(pt).add(0, e.getBbHeight() / 2, 0);
             int rgb = colorMode.is("Custom") ? 0xFF000000 | color.get() : byDistance(d);
-            render.tracer(at, rgb, width.get().floatValue(), glow.get());
+            render.tracer(at, rgb, width.get().floatValue(), glow.get(), fade.get());
         }
     }
 

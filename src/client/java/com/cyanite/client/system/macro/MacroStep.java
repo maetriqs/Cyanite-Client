@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.core.BlockPos;
 
 import java.util.ArrayList;
@@ -24,6 +25,11 @@ public final class MacroStep {
     public static final int MAX_DEPTH = 24;
     /** Comparisons the condition blocks offer. */
     public static final String[] OPS = {"<", "<=", "=", ">=", ">", "!="};
+    /** Which neighbour "place block" clicks against; Any picks one you can see. */
+    public static final String[] PLACE_SIDES = {"Any", "Below", "Above", "North", "South", "West", "East"};
+    /** What "swap menu slot" swaps with: a hotbar slot's number key, or F for the off hand. */
+    public static final String[] HOTBAR_KEYS = {"Hotbar 1", "Hotbar 2", "Hotbar 3", "Hotbar 4", "Hotbar 5", "Hotbar 6", "Hotbar 7",
+        "Hotbar 8", "Hotbar 9", "Off hand"};
 
     public enum Group {
         CHAT("Chat", 0xCF63CF),
@@ -79,6 +85,26 @@ public final class MacroStep {
         }
     }
 
+    /** A key the way key blocks name it: "r", "left.shift", "f5", "mouse.4". */
+    public static String keyName(InputConstants.Key key) {
+        String name = key.getName();
+        if (name.startsWith("key.keyboard.")) return name.substring("key.keyboard.".length());
+        return name.startsWith("key.") ? name.substring(4) : name;
+    }
+
+    /** The key a key block names, or null if there's no such key. */
+    public static InputConstants.Key key(String name) {
+        String n = name.strip().toLowerCase(Locale.ROOT).replace(' ', '.');
+        if (n.isEmpty()) return null;
+        if (!n.startsWith("key.")) n = (n.startsWith("mouse.") ? "key." : "key.keyboard.") + n;
+        try {
+            InputConstants.Key key = InputConstants.getKey(n);
+            return key.equals(InputConstants.UNKNOWN) ? null : key;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
     public enum Type {
         // ---- Chat
         SAY(Group.CHAT, Shape.STACK, "send {text}", "Sends a chat message, or a command if it starts with /. {name} puts in a variable",
@@ -93,6 +119,12 @@ public final class MacroStep {
         HOLD(Group.MOVE, Shape.STACK, "hold {key} for {seconds} s", "Holds a key down for a while",
             Param.choice("key", "Key", "Forward", "Back", "Left", "Right", "Jump", "Sneak", "Sprint", "Attack", "Use"),
             Param.number("seconds", "Seconds", 1, 0.05, 600, 0.05, "s")),
+        KEY_PRESS(Group.MOVE, Shape.STACK, "press key {key}", "Taps a key once: whatever it's bound to happens, like F5 or another mod's key",
+            Param.text("key", "Key", "f5")),
+        KEY_DOWN(Group.MOVE, Shape.STACK, "hold down key {key}", "Keeps a key held while the blocks after it run, until a let go block. Hold left.shift to sneak while you right click",
+            Param.text("key", "Key", "left.shift")),
+        KEY_UP(Group.MOVE, Shape.STACK, "let go of key {key}", "Lets go of a key a hold down block is holding",
+            Param.text("key", "Key", "left.shift")),
 
         // ---- Looking
         LOOK(Group.LOOK, Shape.STACK, "face yaw {yaw} pitch {pitch}", "Turns to an exact direction: yaw 0 is south, 90 west, 180 north, -90 east",
@@ -106,6 +138,8 @@ public final class MacroStep {
         ATTACK(Group.ACT, Shape.STACK, "left click", "Clicks attack once: hits whatever you're looking at"),
         MINE(Group.ACT, Shape.STACK, "mine block at {pos}", "Looks at a block and mines it until it breaks",
             Param.pos("pos", "Block")),
+        PLACE(Group.ACT, Shape.STACK, "place block at {pos}", "Places what you're holding there, against the side of a block next to it",
+            Param.pos("pos", "Block"), Param.choice("side", "Against", PLACE_SIDES)),
         USE(Group.ACT, Shape.STACK, "right click", "Clicks use once: eats, places, opens whatever you're looking at"),
         USE_ON(Group.ACT, Shape.STACK, "use block at {pos}", "Looks at a block and right clicks it: chests, buttons, levers, signs",
             Param.pos("pos", "Block")),
@@ -113,10 +147,14 @@ public final class MacroStep {
         // ---- Items & menus
         SLOT(Group.ITEMS, Shape.STACK, "select hotbar slot {slot}", "Picks a hotbar slot",
             Param.number("slot", "Slot", 1, 1, 9, 1, "")),
+        SWAP_HANDS(Group.ITEMS, Shape.STACK, "swap hands", "Swaps what's in your hand with your off hand, like pressing F"),
         DROP(Group.ITEMS, Shape.STACK, "drop {amount}", "Drops what you're holding",
             Param.choice("amount", "Amount", "One", "Whole stack")),
+        OPEN_INVENTORY(Group.ITEMS, Shape.STACK, "open inventory", "Opens your inventory, so menu slot blocks can move your items about"),
         CLICK_SLOT(Group.ITEMS, Shape.STACK, "{button} click menu slot {slot}", "Clicks a slot in the open menu: chests, /ah, /shop. Waits for the menu to open",
             Param.choice("button", "Click", "Left", "Right", "Shift"), Param.number("slot", "Slot", 0, 0, 89, 1, "")),
+        MENU_SWAP(Group.ITEMS, Shape.STACK, "swap slot {slot} with {hotbar}", "Like pressing a number key over a slot in the open menu: swaps it with that hotbar slot, or your off hand",
+            Param.number("slot", "Slot", 0, 0, 89, 1, ""), Param.choice("hotbar", "With", HOTBAR_KEYS)),
         CLOSE(Group.ITEMS, Shape.STACK, "close menu", "Closes whatever menu is open"),
 
         // ---- Control
@@ -162,6 +200,8 @@ public final class MacroStep {
             Param.op(), Param.number("amount", "Food", 10, 0, 20, 1, "")),
         Y_LEVEL(Group.SENSING, Shape.CONDITION, "Y level {op} {amount}", "How high up you are",
             Param.op(), Param.number("amount", "Y", 0, -64, 320, 1, "")),
+        NEAR(Group.SENSING, Shape.CONDITION, "within {range} blocks of {pos}", "You're close to a block: say, once a /home or /warp has landed",
+            Param.number("range", "Range", 4, 1, 256, 1, ""), Param.pos("pos", "Block")),
         INVENTORY_FULL(Group.SENSING, Shape.CONDITION, "inventory full", "No empty slot left in your inventory"),
         HOLDING(Group.SENSING, Shape.CONDITION, "holding {item}", "What's in your hand, by name or id: pickaxe, diamond_sword, totem",
             Param.text("item", "Item", "pickaxe")),

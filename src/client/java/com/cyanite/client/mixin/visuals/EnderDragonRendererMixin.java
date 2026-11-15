@@ -1,0 +1,22 @@
+package com.cyanite.client.mixin.visuals;
+
+import com.cyanite.client.visuals.Crystals;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.renderer.SubmitNodeCollector;
+import net.minecraft.client.renderer.entity.EnderDragonRenderer;
+import net.minecraft.client.renderer.rendertype.RenderType;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+
+// Crystal Beam: the beam's colour (crystals' and the dragon's healing beams share this).
+@Mixin(EnderDragonRenderer.class)
+public class EnderDragonRendererMixin {
+    @WrapOperation(method = "submitCrystalBeams", at = @At(value = "INVOKE",
+        target = "Lnet/minecraft/client/renderer/SubmitNodeCollector;submitCustomGeometry(Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/rendertype/RenderType;Lnet/minecraft/client/renderer/SubmitNodeCollector$CustomGeometryRenderer;)V"))
+    private static void cyanite$beamColor(SubmitNodeCollector collector, PoseStack pose, RenderType type, SubmitNodeCollector.CustomGeometryRenderer renderer,
+                                          Operation<Void> original) {
+        original.call(collector, pose, type, (SubmitNodeCollector.CustomGeometryRenderer) (p, out) -> renderer.render(p, Crystals.beam(out)));
+    }
+}

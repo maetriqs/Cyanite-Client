@@ -20,7 +20,7 @@ import java.util.Map;
 
 /**
  * A system font rasterised into a glyph atlas at the exact pixel size it's drawn at,
- * so text stays sharp. One instance covers one family at one GUI scale.
+ * so text stays sharp. One instance covers one family at one GUI scale, or one size of display text.
  */
 final class TrueTypeFont {
     private static final int ATLAS_WIDTH = 512;
@@ -39,22 +39,34 @@ final class TrueTypeFont {
     }
 
     TrueTypeFont(String family, int unit) {
+        this(family, unit, false, Math.max(5f, 6.4f * unit), Text.CAP * unit, charset(), slug(family) + "_" + unit);
+    }
+
+    /**
+     * Display text: capitals {@code capPx} pixels tall with {@code y} at their top.
+     * A null charset is the usual one; a short one keeps a big size's atlas small.
+     * Each gets a texture name of its own: an old one is let go a frame late, when its replacement may be up already.
+     */
+    TrueTypeFont(String family, boolean bold, int capPx, String charset) {
+        this(family, 0, bold, capPx, capPx, charset != null ? charset : charset(), slug(family) + "_display_" + displays++);
+    }
+
+    private static int displays;
+
+    private TrueTypeFont(String family, int unit, boolean bold, float capTarget, int capBox, String charset, String name) {
         this.family = family;
         this.unit = unit;
 
         FontRenderContext frc = new FontRenderContext(null, true, true);
 
         // Size the font by its cap height so it lines up with the layout like the pixel font does.
-        Font probe = new Font(family, Font.PLAIN, 100);
+        Font probe = new Font(family, bold ? Font.BOLD : Font.PLAIN, 100);
         double capRatio = probe.createGlyphVector(frc, "H").getVisualBounds().getHeight() / 100.0;
-        int capBox = Text.CAP * unit;
-        float capTarget = Math.max(5f, 6.4f * unit);
         Font font = probe.deriveFont((float) (capTarget / capRatio));
 
         float capPx = (float) font.createGlyphVector(frc, "H").getVisualBounds().getHeight();
         baseline = Math.round((capBox - capPx) / 2f + capPx);
 
-        String charset = charset();
         int count = charset.codePointCount(0, charset.length());
         GlyphVector[] vectors = new GlyphVector[count];
         Rectangle[] bounds = new Rectangle[count];
@@ -108,22 +120,46 @@ final class TrueTypeFont {
             }
         }
 
-        String id = "font/" + family.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "_") + "_" + unit;
-        texture = Render2D.upload(id, pixels);
-        fallback = glyphs.get((int) '?');
+        texture = Render2D.upload("font/" + name, pixels);
+        fallback = glyphs.getOrDefault((int) '?', new Glyph(0, 0, 0, 0, 0, 0, 0));
+    }
+
+    private static String slug(String family) {
+        return family.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "_");
+    }
+
+    /** Whether every character of {@code text} is in the atlas. */
+    boolean covers(String text) {
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            i += Character.charCount(cp);
+            if (!glyphs.containsKey(cp)) return false;
+        }
+        return true;
     }
 
     float width(String text) {
+        return width(text, 0);
+    }
+
+    /** With {@code tracking} extra pixels between letters. */
+    float width(String text, float tracking) {
         float width = 0;
+        int count = 0;
         for (int i = 0; i < text.length(); ) {
             int cp = text.codePointAt(i);
             i += Character.charCount(cp);
             width += glyphs.getOrDefault(cp, fallback).advance;
+            count++;
         }
-        return width;
+        return width + tracking * Math.max(0, count - 1);
     }
 
     void draw(GuiGraphics g, String text, int x, int y, int color) {
+        draw(g, text, x, y, color, 0);
+    }
+
+    void draw(GuiGraphics g, String text, int x, int y, int color, float tracking) {
         float pen = x;
         int base = y + baseline;
         // The whole string as one piece for the game's GUI, not one per letter.
@@ -141,7 +177,7 @@ final class TrueTypeFont {
                 int gy = base + glyph.y;
                 quads.add(gx, gy, gx + glyph.w, gy + glyph.h, glyph.u / tw, glyph.v / th, (glyph.u + glyph.w) / tw, (glyph.v + glyph.h) / th);
             }
-            pen += glyph.advance;
+            pen += glyph.advance + tracking;
         }
         quads.submit(g);
     }

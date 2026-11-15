@@ -3,6 +3,7 @@ package com.cyanite.client.hud;
 import com.cyanite.client.gui.Theme;
 import com.cyanite.client.gui.render.Render2D;
 import com.cyanite.client.gui.render.Text;
+import com.cyanite.client.system.Online;
 import com.cyanite.client.system.setting.BoolSetting;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
@@ -24,6 +25,7 @@ public class Watermark extends HudElement {
     private final BoolSetting fps = add(new BoolSetting("FPS", true));
     private final BoolSetting ping = add(new BoolSetting("Ping", true));
     private final BoolSetting time = add(new BoolSetting("Time", false));
+    private final BoolSetting online = add(new BoolSetting("Online", true));
     private final BoolSetting background = add(new BoolSetting("Background", true));
 
     private final String versionText = FabricLoader.getInstance().getModContainer("cyanite_client")
@@ -46,6 +48,7 @@ public class Watermark extends HudElement {
             if (info != null) extras.add(info.getLatency() + " ms");
         }
         if (time.get()) extras.add(LocalTime.now().format(CLOCK));
+        if (online.get() && Online.label() instanceof String count) extras.add(count);
 
         int textWidth = Text.width(NAME);
         if (version.get()) textWidth += GAP + Text.width(versionText);

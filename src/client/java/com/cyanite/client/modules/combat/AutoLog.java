@@ -54,6 +54,6 @@ public class AutoLog extends Module {
         if (reason == null) return;
 
         if (turnOff.get()) setEnabled(false);
-        mc.getConnection().getConnection().disconnect(com.cyanite.client.system.Stealth.disconnectReason("Cyanite Auto Log\n\n" + reason));
+        com.cyanite.client.system.Disconnects.leave("Cyanite Auto Log\n\n" + reason);
     }
 }

@@ -2,6 +2,7 @@ package com.cyanite.client.mixin;
 
 import com.cyanite.client.modules.render.Freecam;
 import com.cyanite.client.modules.render.NoFog;
+import com.cyanite.client.render.SpaceSky;
 import com.cyanite.client.system.Modules;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -13,8 +14,11 @@ import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.fog.FogRenderer;
 import org.spongepowered.asm.mixin.Mixin;
+import org.joml.Vector4f;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(FogRenderer.class)
 public class FogRendererMixin {
@@ -46,5 +50,12 @@ public class FogRendererMixin {
     private void cyanite$noDistanceFogEnd(FogData data, float value, Operation<Void> original) {
         NoFog noFog = Modules.get(NoFog.class);
         original.call(data, noFog != null && noFog.clearsDistance() ? NoFog.far() * 2 : value);
+    }
+
+    // Cinematic's space sky: the haze at its horizon matches the fog colour the game settled on.
+    @Inject(method = "setupFog", at = @At("RETURN"))
+    private void cyanite$spaceSkyHaze(Camera camera, int renderDistance, DeltaTracker deltaTracker, float darken, ClientLevel level,
+                                      CallbackInfoReturnable<Vector4f> cir) {
+        SpaceSky.fogUsed(cir.getReturnValue());
     }
 }

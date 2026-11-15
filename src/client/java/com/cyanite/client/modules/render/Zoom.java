@@ -93,6 +93,12 @@ public class Zoom extends Module {
         return zoom == null || !zoom.slowMouse.get() || zoom.shown <= 1 ? 1 : 1 / zoom.shown;
     }
 
+    /** Whether Zoom is on and bound to {@code key}, so another zoom on the same key stands aside. */
+    public static boolean handles(int key) {
+        Zoom zoom = Modules.get(Zoom.class);
+        return zoom != null && zoom.isEnabled() && zoom.key.isBound() && zoom.key.get() == key;
+    }
+
     /** Works out this frame's zoom: picks up the key going down or up and eases the view toward where it's heading. */
     private double frame() {
         long now = System.nanoTime();

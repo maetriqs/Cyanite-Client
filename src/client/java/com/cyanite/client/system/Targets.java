@@ -1,5 +1,6 @@
 package com.cyanite.client.system;
 
+import com.cyanite.client.mixin.LocalPlayerAccessor;
 import com.cyanite.client.modules.combat.AntiBot;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.Mth;
@@ -47,6 +48,25 @@ public final class Targets {
         float yaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90f;
         float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
         return new float[]{Mth.wrapDegrees(yaw), Mth.clamp(pitch, -90f, 90f)};
+    }
+
+    /**
+     * Whether the look the server has for you, the one your last movement packet carried, runs into
+     * {@code box} within {@code range}. A hit or a block placed now is judged by that look, not by
+     * where you've turned since.
+     */
+    public static boolean sentLookHits(AABB box, double range) {
+        Vec3 eyes = mc.player.getEyePosition();
+        if (box.contains(eyes)) return true;
+        LocalPlayerAccessor sent = (LocalPlayerAccessor) mc.player;
+        Vec3 look = Vec3.directionFromRotation(sent.cyanite$getSentPitch(), sent.cyanite$getSentYaw());
+        return box.clip(eyes, eyes.add(look.scale(range))).isPresent();
+    }
+
+    /** Turns you to this look the short way round: a yaw that jumps a full circle gets flagged. */
+    public static void turnTo(float yaw, float pitch) {
+        mc.player.setYRot(mc.player.getYRot() + Mth.wrapDegrees(yaw - mc.player.getYRot()));
+        mc.player.setXRot(Mth.clamp(pitch, -90f, 90f));
     }
 
     /** How far, in degrees, {@code point} is from where you're looking. */

@@ -325,7 +325,8 @@ public class DrillTester extends Module {
         float dy = Mth.wrapDegrees(wantYaw - player.getYRot());
         float dp = wantPitch - player.getXRot();
         float step = (float) Math.min(1, dt * 14);
-        player.setYRot(Math.abs(dy) < 0.05f ? wantYaw : player.getYRot() + dy * step);
+        // Snap by the wrapped difference: snapping to wantYaw itself jumps a full circle once you've spun round.
+        player.setYRot(player.getYRot() + (Math.abs(dy) < 0.05f ? dy : dy * step));
         player.setXRot(Mth.clamp(Math.abs(dp) < 0.05f ? wantPitch : player.getXRot() + dp * step, -90, 90));
     }
 

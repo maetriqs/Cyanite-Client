@@ -2,7 +2,10 @@ package com.cyanite.client.gui;
 
 import com.cyanite.client.gui.render.Render2D;
 import com.cyanite.client.gui.render.Text;
+import com.cyanite.client.system.Keys;
+import com.cyanite.client.system.Notify;
 import com.cyanite.client.system.setting.BlockListSetting;
+import com.cyanite.client.system.setting.ItemListSetting;
 import com.cyanite.client.system.setting.ModListSetting;
 import com.cyanite.client.system.setting.BoolSetting;
 import com.cyanite.client.system.setting.ColorSetting;
@@ -29,6 +32,8 @@ import java.util.Map;
 final class SettingsList {
     private static final int SHORT = 14;
     private static final int TALL = 21;
+    /** A full colour: its hue, saturation and brightness bars. */
+    private static final int COLOR_FULL = 37;
     private static final int INSET = 4;
 
     // Only one bind can be waiting for a key, and one text value being typed into, across every list.
@@ -38,6 +43,8 @@ final class SettingsList {
     private final List<Setting<?>> settings;
     private final Map<Setting<?>, float[]> anim = new IdentityHashMap<>();
     private Setting<?> dragging;
+    /** Which bar of a full colour is being dragged: 0 hue, 1 saturation, 2 brightness. */
+    private int dragBar;
     private int x;
     private int y;
     private int w;
@@ -51,6 +58,7 @@ final class SettingsList {
     }
 
     static int heightOf(Setting<?> setting) {
+        if (setting instanceof ColorSetting color && color.isFull()) return COLOR_FULL;
         return setting instanceof SliderSetting || setting instanceof ColorSetting ? TALL : SHORT;
     }
 
@@ -85,7 +93,7 @@ final class SettingsList {
             Render2D.end(g);
 
             int labelColor = setting.isRisky() ? Theme.DANGER : Theme.mix(Theme.TEXT_DIM, Theme.TEXT, a[0]);
-            Text.draw(g, setting.name, x + INSET, rowY + (SHORT - Text.CAP) / 2, Theme.fade(labelColor, alpha));
+            Text.draw(g, label(setting), x + INSET, rowY + (SHORT - Text.CAP) / 2, Theme.fade(labelColor, alpha));
 
             if (setting instanceof BoolSetting bool) drawBool(g, bool, a, rowY, dt, alpha);
             else if (setting instanceof ModeSetting mode) drawMode(g, mode, a, rowY, alpha);
@@ -93,8 +101,9 @@ final class SettingsList {
             else if (setting instanceof ColorSetting color) drawColor(g, color, rowY, alpha);
             else if (setting instanceof KeybindSetting bind) drawBind(g, bind, rowY, alpha);
             else if (setting instanceof StringSetting text) drawText(g, text, rowY, alpha);
-            else if (setting instanceof BlockListSetting blocks) drawPicker(g, count(blocks.get().size(), "block", "None"), blocks.get().isEmpty(), a, rowY, alpha);
-            else if (setting instanceof ModListSetting mods) drawPicker(g, count(mods.get().size(), "mod", "All hidden"), mods.get().isEmpty(), a, rowY, alpha);
+            else if (setting instanceof BlockListSetting blocks) drawPicker(g, blocks, count(blocks.get().size(), "block", "None"), blocks.get().isEmpty(), a, rowY, alpha);
+            else if (setting instanceof ModListSetting mods) drawPicker(g, mods, count(mods.get().size(), "mod", "All hidden"), mods.get().isEmpty(), a, rowY, alpha);
+            else if (setting instanceof ItemListSetting items) drawPicker(g, items, count(items.get().size(), "item", "None"), items.get().isEmpty(), a, rowY, alpha);
 
             rowY += h;
         }
@@ -109,6 +118,10 @@ final class SettingsList {
     private void drawMode(GuiGraphics g, ModeSetting mode, float[] a, int rowY, float alpha) {
         int s = Render2D.scale();
         String value = mode.get();
+        if (Widgets.classic() && fits(mode, Text.width(value) + 15)) {
+            Widgets.pill(g, x + w - INSET, rowY + SHORT / 2, value, Theme.accentText(), a[0], alpha);
+            return;
+        }
         int arrowX = x + w - INSET - 3;
         int valueX = arrowX - 5 - Text.width(value);
 
@@ -152,8 +165,12 @@ final class SettingsList {
     }
 
     /** "3 blocks" and an arrow: a click opens the picker. */
-    private void drawPicker(GuiGraphics g, String value, boolean none, float[] a, int rowY, float alpha) {
+    private void drawPicker(GuiGraphics g, Setting<?> setting, String value, boolean none, float[] a, int rowY, float alpha) {
         int s = Render2D.scale();
+        if (Widgets.classic() && fits(setting, Text.width(value) + 15)) {
+            Widgets.pill(g, x + w - INSET, rowY + SHORT / 2, value, none ? Theme.TEXT_FAINT : Theme.accentText(), a[0], alpha);
+            return;
+        }
         int arrowX = x + w - INSET - 3;
         Text.draw(g, value, arrowX - 5 - Text.width(value), rowY + (SHORT - Text.CAP) / 2,
             Theme.fade(none ? Theme.TEXT_FAINT : Theme.accentText(), alpha));
@@ -174,7 +191,45 @@ final class SettingsList {
             text = bind.display();
             color = bind.isBound() ? Theme.accentText() : Theme.TEXT_FAINT;
         }
+        if (Widgets.classic() && (bind == listening || bind.isBound()) && fits(bind, Text.width(text) + 7)) {
+            Widgets.keycap(g, x + w - INSET, rowY + SHORT / 2, text, color, alpha);
+            return;
+        }
         Text.draw(g, text, x + w - INSET - Text.width(text), rowY + (SHORT - Text.CAP) / 2, Theme.fade(color, alpha));
+    }
+
+    /**
+     * The setting's name, cut short if its value would otherwise run into it: the value goes plain
+     * (no pill or key cap) first, and only if that's still too wide does the name give way.
+     */
+    private String label(Setting<?> setting) {
+        if (setting instanceof StringSetting) return setting.name;
+        String value = valueText(setting);
+        int plain = setting instanceof BoolSetting ? Widgets.TOGGLE_W : setting instanceof ColorSetting c ? (c.isFull() ? 16 + Text.width("#000000") : 12)
+            : value == null ? 0 : Text.width(value) + (setting instanceof SliderSetting || setting instanceof KeybindSetting ? 0 : 8);
+        int styled = setting instanceof ModeSetting || setting instanceof BlockListSetting || setting instanceof ModListSetting || setting instanceof ItemListSetting ? Text.width(value) + 15
+            : setting instanceof KeybindSetting bind && (bind == listening || bind.isBound()) ? Text.width(value) + 7 : plain;
+        int room = w - INSET * 2 - 6 - (Widgets.classic() && fits(setting, styled) ? styled : plain);
+        if (Text.width(setting.name) <= room) return setting.name;
+        String cut = setting.name;
+        while (cut.length() > 1 && Text.width(cut + "\u2026") > room) cut = cut.substring(0, cut.length() - 1);
+        return cut.stripTrailing() + "\u2026";
+    }
+
+    /** What's written on the right of a row, or null for a box, swatch or text field. */
+    private String valueText(Setting<?> setting) {
+        if (setting instanceof ModeSetting mode) return mode.get();
+        if (setting instanceof SliderSetting slider) return slider.display();
+        if (setting instanceof KeybindSetting bind) return bind == listening ? "Press a key" : bind.display();
+        if (setting instanceof BlockListSetting blocks) return count(blocks.get().size(), "block", "None");
+        if (setting instanceof ModListSetting mods) return count(mods.get().size(), "mod", "All hidden");
+        if (setting instanceof ItemListSetting items) return count(items.get().size(), "item", "None");
+        return null;
+    }
+
+    /** Whether a value {@code width} wide fits beside the setting's name. */
+    private boolean fits(Setting<?> setting, int width) {
+        return INSET + Text.width(setting.name) + 6 + width <= w - INSET;
     }
 
     private void drawText(GuiGraphics g, StringSetting text, int rowY, float alpha) {
@@ -234,9 +289,29 @@ final class SettingsList {
         Render2D.rect(g, sx, sy, sw, sh, 2 * s, Theme.fade(rgb, alpha));
 
         Render2D.hueBar(g, bx, by, bw, bh, Theme.fade(0xFFFFFFFF, alpha));
+        marker(g, mx, by, bh, marker, s, alpha);
+        if (color.isFull()) {
+            float[] hsv = ColorSetting.hsv(color.get());
+            int pure = 0xFF000000 | ColorSetting.fromHsv(hsv[0], 1, Math.max(hsv[2], 0.05f));
+            int grey = 0xFF000000 | ColorSetting.fromHsv(0, 0, hsv[2]);
+            int satY = (rowY + 21) * s;
+            Render2D.gradientRight(g, bx, satY, bw, bh, Theme.fade(grey, alpha), Theme.fade(pure, alpha));
+            marker(g, bx + Math.round(hsv[1] * bw) - marker / 2, satY, bh, marker, s, alpha);
+            int vy = (rowY + 29) * s;
+            int bright = 0xFF000000 | ColorSetting.fromHsv(hsv[0], hsv[1], 1);
+            Render2D.gradientRight(g, bx, vy, bw, bh, Theme.fade(0xFF000000, alpha), Theme.fade(bright, alpha));
+            marker(g, bx + Math.round(hsv[2] * bw) - marker / 2, vy, bh, marker, s, alpha);
+        }
+        Render2D.end(g);
+        if (color.isFull()) {
+            String hex = String.format("#%06X", color.get());
+            Text.draw(g, hex, x + w - INSET - 16 - Text.width(hex), rowY + (SHORT - Text.CAP) / 2, Theme.fade(Theme.TEXT_FAINT, alpha));
+        }
+    }
+
+    private static void marker(GuiGraphics g, int mx, int by, int bh, int marker, int s, float alpha) {
         g.fill(mx - 1, by - s, mx + marker + 1, by + bh + s, Theme.fade(0xFF000000, alpha * 0.8f));
         g.fill(mx, by - s + 1, mx + marker, by + bh + s - 1, Theme.fade(0xFFFFFFFF, alpha));
-        Render2D.end(g);
     }
 
     boolean mouseClicked(double mouseX, double mouseY, int button) {
@@ -244,6 +319,7 @@ final class SettingsList {
         for (Setting<?> setting : settings) {
             int h = heightOf(setting);
             if (Page.inside(mouseX, mouseY, x, rowY, w, h)) {
+                dragBar = mouseY < rowY + 18 ? 0 : mouseY < rowY + 26 ? 1 : 2;
                 click(setting, mouseX, button);
                 return true;
             }
@@ -272,6 +348,9 @@ final class SettingsList {
         } else if (setting instanceof ModListSetting mods) {
             Minecraft mc = Minecraft.getInstance();
             mc.setScreen(new ModPickerScreen(mods, mc.screen));
+        } else if (setting instanceof ItemListSetting items) {
+            Minecraft mc = Minecraft.getInstance();
+            mc.setScreen(new ItemPickerScreen(items, mc.screen));
         } else if (setting instanceof KeybindSetting bind) {
             listening = bind == listening ? null : bind;
         } else if (setting instanceof StringSetting text) {
@@ -287,7 +366,12 @@ final class SettingsList {
     void mouseDragged(double mouseX) {
         double fraction = (mouseX - (x + INSET)) / (w - INSET * 2);
         if (dragging instanceof SliderSetting slider) slider.setFraction(fraction);
-        else if (dragging instanceof ColorSetting color) color.setHue((float) Math.max(0, Math.min(0.999, fraction)));
+        else if (dragging instanceof ColorSetting color) {
+            float f = (float) Math.max(0, Math.min(1, fraction));
+            if (!color.isFull() || dragBar == 0) color.setHue(Math.min(0.999f, f));
+            else if (dragBar == 1) color.setSaturation(f);
+            else color.setBrightness(f);
+        }
     }
 
     /** Feeds a key press to whatever is being edited. @return true if it was used. */
@@ -308,11 +392,24 @@ final class SettingsList {
         if (listening == null) return false;
 
         int key = event.key();
-        if (key == GLFW.GLFW_KEY_BACKSPACE || key == GLFW.GLFW_KEY_DELETE) listening.set(KeybindSetting.NONE);
-        else if (key != GLFW.GLFW_KEY_ESCAPE) listening.set(key);
+        if (key == GLFW.GLFW_KEY_BACKSPACE || key == GLFW.GLFW_KEY_DELETE) {
+            listening.set(KeybindSetting.NONE);
+        } else if (key != GLFW.GLFW_KEY_ESCAPE) {
+            listening.set(key);
+            warnClashes(listening);
+        }
 
         listening = null;
         return true;
+    }
+
+    /** A key that already does something else gets said: in game one press does all of them. */
+    private static void warnClashes(KeybindSetting bind) {
+        List<String> clashes = Keys.clashes(bind);
+        if (clashes.isEmpty()) return;
+        String others = clashes.size() <= 2 ? String.join(" and ", clashes)
+            : clashes.get(0) + ", " + clashes.get(1) + " and " + (clashes.size() - 2) + " more";
+        Notify.send("Key in use", bind.display() + " is also bound to " + others, true, false, false);
     }
 
     /** Feeds a typed character to the text value being edited. */

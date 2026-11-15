@@ -34,8 +34,10 @@ public class ClickGuiScreen extends Screen {
         .map(mod -> "v" + mod.getMetadata().getVersion().getFriendlyString())
         .orElse("");
 
-    private final Page[] pages = {new ModulesPage(), new HudPage(), new GuiPage(), new ProfilesPage(), new DonutPage(), new AccountsPage(), new AreaMinerPage(), new SchematicBuilderPage(), new MacrosPage()};
-    private final TabBar tabs = new TabBar("Modules", "HUD", "GUI", "Profiles", DonutSmp.NAME, "Accounts", "Area Miner", "Schematic Builder", "Macros");
+    /** Where Accounts is in {@link #pages}. */
+    private static final int ACCOUNTS_TAB = 6;
+    private final Page[] pages = {new ModulesPage(), new VisualsPage(), new HudPage(), new GuiPage(), new ProfilesPage(), new DonutPage(), new AccountsPage(), new AreaMinerPage(), new SchematicBuilderPage(), new MacrosPage()};
+    private final TabBar tabs = new TabBar("Modules", "Visuals", "HUD", "GUI", "Profiles", DonutSmp.NAME, "Accounts", "Area Miner", "Schematic Builder", "Macros");
     private final Screen parent;
 
     private int unit = 1;
@@ -64,12 +66,19 @@ public class ClickGuiScreen extends Screen {
         super(Component.literal("Cyanite Client"));
         this.parent = parent;
         tabs.select(tab);
-        ((GuiPage) pages[2]).onTutorial = this::startTutorial;
+        ((GuiPage) pages[3]).onTutorial = this::startTutorial;
     }
 
     /** The menu: the Beta UI when that's switched on in Look & feel, the classic one otherwise. */
     public static Screen open(Screen parent) {
         return GuiSettings.BETA.get() ? new BetaGuiScreen(parent) : new ClickGuiScreen(parent);
+    }
+
+    /** The menu on its Accounts page, either one. */
+    public static Screen openAccounts(Screen parent) {
+        if (!GuiSettings.BETA.get()) return new ClickGuiScreen(parent, ACCOUNTS_TAB);
+        BetaGuiScreen.openOnAccounts();
+        return new BetaGuiScreen(parent);
     }
 
     public static boolean tutorialSeen() {
@@ -109,20 +118,21 @@ public class ClickGuiScreen extends Screen {
 
     private List<Tutorial.Step> tutorialSteps() {
         return List.of(
-            new Tutorial.Step(0, "Tabs", "Everything lives in these tabs: your modules, the HUD, how this menu looks, your profiles and the Donut SMP tools.", tabs::bounds),
+            new Tutorial.Step(0, "Tabs", "Everything lives in these tabs: your modules, visuals, the HUD, how this menu looks, your profiles and the Donut SMP tools.", tabs::bounds),
             new Tutorial.Step(0, "Categories", "Modules are grouped into windows like this one. Drag a window by its title to move it, or click the title to fold it away.", () -> ModulesPage.window(Category.COMBAT)),
             new Tutorial.Step(0, "Turning modules on", "Left click a module to switch it on or off. Right click it to show its settings right underneath.", () -> ModulesPage.firstRow(Category.COMBAT)),
             new Tutorial.Step(0, "Search", "Just start typing to find a module by its name, a setting or what it does. Enter switches the top match on or off, and Esc clears it.", () -> ((ModulesPage) pages[0]).searchBounds()),
             new Tutorial.Step(0, "Bigger modules", "Modules with lots of settings show a few, then an All settings button that opens the rest in their own window.", () -> ModulesPage.window(Category.RENDER)),
             new Tutorial.Step(0, "Keybinds", "Every module has a Bind setting. Click it and press a key, and that key turns the module on and off while you play. Insert opens this menu.", () -> Rect.EMPTY),
-            new Tutorial.Step(1, "The HUD", "Switch the watermark and arraylist on or off and change how they look. While this tab is open you can drag them anywhere on screen.", () -> pages[1].bounds()),
-            new Tutorial.Step(2, "Make it yours", "Pick a font, an accent color, the menu size, glow and corner roundness. The Tutorial button up here replays this tour.", () -> pages[2].bounds()),
-            new Tutorial.Step(3, "Profiles", "Your setup saves on its own. Save it under a name to switch between setups in one click.", () -> pages[3].bounds()),
-            new Tutorial.Step(4, DonutSmp.NAME, "Your server's tools: join in one click, run your saved commands, and load a profile automatically when you join.", () -> pages[4].bounds()),
-            new Tutorial.Step(5, "Accounts", "Add Microsoft or cracked accounts and switch between them in one click. Insert opens this menu on the title screen and server list too, so you can switch before joining.", () -> pages[5].bounds()),
-            new Tutorial.Step(6, "Area Miner", "Pick an area with two corners or a Litematica schematic, hold your drill and press Start. It digs the whole thing out, lane by lane, and never cuts past the edge.", () -> pages[6].bounds()),
-            new Tutorial.Step(7, "Schematic Builder", "Place a schematic with Litematica, pick it here and press Start. It builds it like a player, buying what you're short of off /ah layer by layer, with lava and water by the bucket.", () -> pages[7].bounds()),
-            new Tutorial.Step(8, "Macros", "Build macros out of steps: send commands, walk, look, mine, click menu slots, wait for chat. Share codes with friends and import theirs.", () -> pages[8].bounds()),
+            new Tutorial.Step(1, "Visuals", "Change how the game looks: crosshair, totem pops, hit colors, particles, trails and more. Each PvP mode gets its own profile, and the preview shows every change as you make it.", () -> pages[1].bounds()),
+            new Tutorial.Step(2, "The HUD", "Switch the watermark and arraylist on or off and change how they look. While this tab is open you can drag them anywhere on screen.", () -> pages[2].bounds()),
+            new Tutorial.Step(3, "Make it yours", "Pick a font, an accent color, the menu size, glow and corner roundness. The Tutorial button up here replays this tour.", () -> pages[3].bounds()),
+            new Tutorial.Step(4, "Profiles", "Your setup saves on its own. Save it under a name to switch between setups in one click.", () -> pages[4].bounds()),
+            new Tutorial.Step(5, DonutSmp.NAME, "Your server's tools: join in one click, run your saved commands, and load a profile automatically when you join.", () -> pages[5].bounds()),
+            new Tutorial.Step(6, "Accounts", "Add Microsoft or cracked accounts and switch between them in one click. Insert opens this menu on the title screen and server list too, so you can switch before joining.", () -> pages[6].bounds()),
+            new Tutorial.Step(7, "Area Miner", "Pick an area with two corners or a Litematica schematic, hold your drill and press Start. It digs the whole thing out, lane by lane, and never cuts past the edge.", () -> pages[7].bounds()),
+            new Tutorial.Step(8, "Schematic Builder", "Place a schematic with Litematica, pick it here and press Start. It builds it like a player, buying what you're short of off /ah layer by layer, with lava and water by the bucket.", () -> pages[8].bounds()),
+            new Tutorial.Step(9, "Macros", "Build macros out of steps: send commands, walk, look, mine, click menu slots, wait for chat. Share codes with friends and import theirs.", () -> pages[9].bounds()),
             new Tutorial.Step(0, "You're all set", "Press Insert any time to open Cyanite. To try the Beta UI, or replay this tour, use the GUI tab.", () -> Rect.EMPTY)
         );
     }

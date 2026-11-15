@@ -136,13 +136,19 @@ public class SpawnerFinder extends Module {
                     EntityType<?> type = mobOf(spawner);
                     if (!wanted(type)) continue;
                     String mob = type == null ? "Unknown" : type.getDescription().getString();
-                    out.add(new Found(spawner.getBlockPos(), mob, spawner, false));
+                    // One Deepslate Bypass put in is still a leak.
+                    BlockEntityLeaks.Found leak = BlockEntityLeaks.at(spawner.getBlockPos());
+                    boolean leakHere = leak != null && leak.hidden();
+                    if (leakHere && !leaked.get()) continue;
+                    out.add(new Found(spawner.getBlockPos(), mob, spawner, leakHere));
                 }
             }
         }
         if (leaked.get()) {
             BlockEntityLeaks.forEach(f -> {
                 if (!f.hidden() || f.type() != BlockEntityType.MOB_SPAWNER) return;
+                // Deepslate Bypass put it in the world, so the scan above has it already.
+                if (mc.level.getBlockEntity(f.pos()) instanceof SpawnerBlockEntity) return;
                 int cx = SectionPos.blockToSectionCoord(f.pos().getX());
                 int cz = SectionPos.blockToSectionCoord(f.pos().getZ());
                 if (Math.max(Math.abs(cx - center.x), Math.abs(cz - center.z)) > radius) return;

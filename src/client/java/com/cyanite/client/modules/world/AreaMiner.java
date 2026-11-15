@@ -2,6 +2,7 @@ package com.cyanite.client.modules.world;
 
 import com.cyanite.client.gui.Theme;
 import com.cyanite.client.litematica.Litematica;
+import com.cyanite.client.modules.donut.AuctionBuyer;
 import com.cyanite.client.modules.world.area.AreaPlan;
 import com.cyanite.client.modules.world.area.AreaSelection;
 import com.cyanite.client.modules.world.area.AreaTarget;
@@ -43,9 +44,11 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.FallingBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.AABB;
@@ -72,8 +75,12 @@ import java.util.Random;
  * lava. Hits are chosen from where you can actually stand and see the face, using the same
  * human aim and held attack as Auto Mine, and you walk there with real movement (see
  * {@link Paths}). Empty pockets cost nothing: a slice with nothing left in it is skipped
- * without a swing. Lava is dug around from whichever side is still safe; whatever stays too
- * close to it is left and counted as skipped. Blocks the drill can't take without cutting
+ * without a swing. Lava and water in and next to the area are filled with blocks from your
+ * inventory as they come in reach: the source blocks, every one in reach before it digs on (what
+ * flows from them dries up after), and the blocks that land inside the area are mined out with
+ * the rest (the ones outside stay, as a wall). With no blocks to fill with, it buys
+ * a stack of sand off /ah. With clearing off, or nothing to fill with, lava is dug around from
+ * whichever side is still safe; whatever stays too close to it is left and counted as skipped. Blocks the drill can't take without cutting
  * outside the area go to another tool from your hotbar, if you have one.
  *
  * <p>If the floor opens into a cave and you fall in, it builds back up: it walks back if it can,
@@ -98,6 +105,18 @@ public class AreaMiner extends Module {
     private static final int FILLER_MOVING = -1;
     private static final int FILLER_NONE = -2;
     private static final int FILLER_NO_ROOM = -3;
+    /** Lava or water filled this many times in one spot keeps coming back: left alone, the lava gap kept round it. */
+    private static final int MAX_FILLS = 8;
+    /** A fill the crosshair can't get onto in this long is passed over for a while. */
+    private static final long FILL_TIMEOUT = 2_500_000_000L;
+    private static final long FILL_PASS = 15_000_000_000L;
+    private static final int SAND_STACK = 64;
+    /** A go at buying sand that came to nothing isn't tried again for five minutes. */
+    private static final long BUY_RETRY = 300_000;
+    /** Longest walk over to somewhere it can fill lava or water from. */
+    private static final long FILL_WALK = 10_000_000_000L;
+    /** Longest it waits for filled lava and water to drain away before calling what's behind it out of reach. */
+    private static final long DRAIN_WAIT = 12_000_000_000L;
     private static final long EMPTY_CONFIRM = 1_500_000_000L;
     private static final long PREVIEW_REFRESH = 1_000_000_000L;
     private static final int TOOL_RESERVE = 10;
@@ -134,11 +153,21 @@ public class AreaMiner extends Module {
     private record Stand(BlockPos cell, int dist, Vec3 aim, double reach) {
     }
 
+    /** Lava or water to fill: the block it goes in, the block it's put against, and where on that to aim. */
+    private record Fill(BlockPos cell, BlockPos against, Direction face, Vec3 aim, double cost) {
+    }
+
     private final SliderSetting drillSize = add(new SliderSetting("Drill size", 3, 3, 9, 2).format(v -> (int) v + "x" + (int) v));
     private final SliderSetting turnSpeed = add(new SliderSetting("Turn speed", 1, 0.3, 3, 0.1).format(v -> String.format(Locale.ROOT, "%.1fx", v)));
     private final SliderSetting randomness = add(new SliderSetting("Randomness", 0.5, 0, 1, 0.05).percent());
     private final SliderSetting lavaGap = add(new SliderSetting("Lava gap", 2, 1, 4, 1).format(v -> (int) v + (v == 1 ? " block" : " blocks")));
     private final BoolSetting avoidWater = add(new BoolSetting("Avoid water", false));
+    private final BoolSetting clearLava = add(new BoolSetting("Clear lava", true));
+    private final BoolSetting clearWater = add(new BoolSetting("Clear water", true));
+    private final BoolSetting buySand = add(new BoolSetting("Buy sand from /ah", true));
+    private final SliderSetting sandMax = add(new SliderSetting("Sand max price a stack", 5_000, 64, 1_000_000, 1).logarithmic().format(SchematicBuilder::dollars));
+    /** Off to match DonutSMP's own "auction buy confirm" setting being off: a click on a listing buys it. */
+    private final BoolSetting ahConfirm = add(new BoolSetting("AH confirm screen", false));
     private final BoolSetting buildUp = add(new BoolSetting("Build back up", true));
     private final ModeSetting edgeBlocks = add(new ModeSetting("Edge blocks", "Other tool", List.of("Other tool", "Skip")));
     private final BoolSetting pauseHurt = add(new BoolSetting("Pause when hurt", true));
@@ -156,6 +185,7 @@ public class AreaMiner extends Module {
     private final HumanAim aim = new HumanAim();
     private final Random random = new Random();
     private final AreaSelection selection = AreaSelection.load();
+    private final AuctionBuyer buyer = new AuctionBuyer();
 
     private State state = State.IDLE;
     private Phase phase = Phase.CHOOSE;
@@ -190,6 +220,35 @@ public class AreaMiner extends Module {
     private long lastTick;
     private long lastLavaNotice;
     private BlockPos lastLavaNoticeAt;
+    /** Lava or water being filled right now, the slot it's filled from, and since when. */
+    private Fill fill;
+    private int fillWith;
+    private long fillSince;
+    private long fillRest;
+    /** Times each spot's been filled, spots passed over till a time, and spots given up on (the lava gap's kept round those). */
+    private final Long2IntOpenHashMap fills = new Long2IntOpenHashMap();
+    private final Long2LongOpenHashMap fillPassed = new Long2LongOpenHashMap();
+    private final LongOpenHashSet stubborn = new LongOpenHashSet();
+    /** Whether lava and water get filled rather than dug round: on, with blocks to fill with or sand to buy. */
+    private boolean fillLava;
+    private boolean fillWater;
+    private int filled;
+    private long noBuyUntil;
+    private long drainSince;
+    /** Lava (water) it's filling that's out in the open, not filled yet: nothing more by it is dug till it is. */
+    private boolean openLava;
+    private boolean openWater;
+    /** Blocks on you to fill with, as of this tick. Without, lava's not dug up to till there are. */
+    private boolean stocked;
+    /** Lava or water by something to dig and nothing on you to fill it with: buy some first. */
+    private boolean wantFiller;
+    private long nextOpenLook;
+    /** Walking over to fill {@link #fillGoal} from the end of {@link #fillPath}. */
+    private List<BlockPos> fillPath;
+    private int fillPathAt;
+    private BlockPos fillGoal;
+    private long fillWalkSince;
+    private long nextFillLook;
 
     // One "choose" can take a few ticks on a big area; this is where it picks up.
     private boolean scanning;
@@ -458,6 +517,9 @@ public class AreaMiner extends Module {
         state = State.IDLE;
         steering = Input.EMPTY;
         aim.clear();
+        buyer.cancel();
+        fill = null;
+        fillPath = null;
         job = null;
         path = null;
         scanning = false;
@@ -507,6 +569,24 @@ public class AreaMiner extends Module {
         landedAt = 0;
         climbFails = 0;
         built = 0;
+        fill = null;
+        fillPath = null;
+        nextFillLook = 0;
+        fillRest = 0;
+        fills.clear();
+        fillPassed.clear();
+        stubborn.clear();
+        fillLava = false;
+        fillWater = false;
+        filled = 0;
+        noBuyUntil = 0;
+        drainSince = 0;
+        openLava = false;
+        stocked = false;
+        wantFiller = false;
+        openWater = false;
+        nextOpenLook = 0;
+        buyer.cancel();
         drillSlot = player.getInventory().getSelectedSlot();
         drillStack = player.getMainHandItem().copy();
         resetPhase();
@@ -578,6 +658,9 @@ public class AreaMiner extends Module {
         if (!isEnabled() || state != State.RUNNING) return;
         state = State.PAUSED;
         status = reason;
+        fill = null;
+        fillPath = null;
+        buyer.cancel();
         steering = Input.EMPTY;
         aim.clear();
         resetPhase();
@@ -595,6 +678,7 @@ public class AreaMiner extends Module {
         StringBuilder sb = new StringBuilder(String.format(Locale.ROOT, ": %,d blocks mined in %,d hits", plan.mined(), hits));
         if (edgeHits > 0) sb.append(String.format(Locale.ROOT, " (%,d with your other tool)", edgeHits));
         if (plan.skipped() > 0) sb.append(String.format(Locale.ROOT, ", %,d skipped", plan.skipped()));
+        if (filled > 0) sb.append(String.format(Locale.ROOT, ", %,d lava and water blocks filled", filled));
         return sb.toString();
     }
 
@@ -652,17 +736,25 @@ public class AreaMiner extends Module {
             lastHealth = player.getHealth();
             return;
         }
+        // Buying sand: its /ah menus are open while it's at it.
+        if (buyer.active()) {
+            steering = Input.EMPTY;
+            tickBuy();
+            return;
+        }
         if (mc.screen != null) {
             steering = Input.EMPTY;
             return;
         }
 
         if (trackFall(player, now)) return;
+        if (escapeLava(player)) return;
         String hazard = hazard(player);
         if (hazard != null) {
             pause(hazard);
             return;
         }
+        if (phase != Phase.CLIMB && tickFill(player, now)) return;
 
         switch (phase) {
             case CHOOSE -> tickChoose(player, now);
@@ -728,6 +820,7 @@ public class AreaMiner extends Module {
 
     private void start(Job next, LocalPlayer player) {
         job = next;
+        drainSince = 0;
         if (jobRanks.size() < 100_000) jobRanks.add(next.rank);
         path = paths.pathTo(next.stand);
         pathIndex = 1;
@@ -824,7 +917,8 @@ public class AreaMiner extends Module {
         } else if (scanLava && failStreak[rank] < 100) {
             // Nothing safe here because of lava. Once every block left in it sits by lava, leave it.
             failStreak[rank]++;
-            if (allNearLava(rank)) skipForLava(rank);
+            // Not while it's only waiting its turn behind lava or water that's open and being filled.
+            if (allNearLava(rank) && !(fillLava && (openLava || !stocked)) && !(fillWater && (openWater || !stocked))) skipForLava(rank);
         }
     }
 
@@ -970,7 +1064,25 @@ public class AreaMiner extends Module {
         byte cached = lavaNear.get(key);
         if (cached >= 0) return cached == 1;
         int gap = lavaGap.get().intValue();
-        boolean water = avoidWater.get();
+        // Lava (and water) that gets filled isn't dug round, except where filling it gave up.
+        for (long s : stubborn) {
+            if (BlockPos.of(s).distManhattan(pos) <= gap) {
+                lavaNear.put(key, (byte) 1);
+                return true;
+            }
+        }
+        if (held(pos)) {
+            lavaNear.put(key, (byte) 1);
+            return true;
+        }
+        // Being filled, it's dug up to and into, one lot at a time: while some is open and not
+        // filled yet, nothing more by it is dug.
+        boolean lava = !fillLava || openLava || !stocked;
+        boolean water = avoidWater.get() && !fillWater || fillWater && (openWater || !stocked);
+        if (!lava && !water) {
+            lavaNear.put(key, (byte) 0);
+            return false;
+        }
         boolean found = false;
         BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
         search:
@@ -981,7 +1093,13 @@ public class AreaMiner extends Module {
                 for (int dz = -rz; dz <= rz; dz++) {
                     m.set(pos.getX() + dx, pos.getY() + dy, pos.getZ() + dz);
                     FluidState fluid = mc.level.getFluidState(m);
-                    if (fluid.is(FluidTags.LAVA) || water && fluid.is(FluidTags.WATER)) {
+                    if (lava && fluid.is(FluidTags.LAVA) || water && fluid.is(FluidTags.WATER)) {
+                        // Being filled, what's out in the open already doesn't count: digging up
+                        // to it lets nothing new out, and it may be the only way to get in reach.
+                        // The gap's for lava you'd leave be: what's filled is only kept from being
+                        // opened up while something else is, and only by what's right beside it.
+                        boolean filled = stocked && (fluid.is(FluidTags.LAVA) ? fillLava : fillWater);
+                        if (filled && (exposed(m, fluid) || Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 1)) continue;
                         found = true;
                         break search;
                     }
@@ -989,14 +1107,40 @@ public class AreaMiner extends Module {
             }
         }
         lavaNear.put(key, (byte) (found ? 1 : 0));
+        if (found && !stocked && (fillLava || fillWater)) wantFiller = true;
         return found;
+    }
+
+    /** Lava or water still running, or a source with air (or what runs from it) beside it. */
+    private boolean exposed(BlockPos pos, FluidState fluid) {
+        if (!fluid.isSource()) return true;
+        for (Direction d : Direction.values()) {
+            BlockPos q = pos.relative(d);
+            if (!mc.level.getFluidState(q).isSource() && mc.level.getBlockState(q).getCollisionShape(mc.level, q).isEmpty()) return true;
+        }
+        return false;
     }
 
     private boolean allNearLava(int rank) {
         for (BlockPos pos : plan.owned(rank)) {
-            if (AreaPlan.diggable(mc.level, pos, mc.level.getBlockState(pos)) && !nearLava(pos)) return false;
+            // A plug that's only held for now doesn't count: it's dug once what's behind it drains.
+            if (AreaPlan.diggable(mc.level, pos, mc.level.getBlockState(pos)) && (!nearLava(pos) || held(pos))) return false;
         }
         return true;
+    }
+
+    /**
+     * A block it filled lava or water with that what it held back still runs beside: the source
+     * feeding that is out of sight or reach, and dug out, it'd only come straight back. Left till
+     * it drains.
+     */
+    private boolean held(BlockPos pos) {
+        if (!fills.containsKey(pos.asLong())) return false;
+        for (Direction d : Direction.values()) {
+            FluidState fluid = mc.level.getFluidState(pos.relative(d));
+            if (!fluid.isEmpty() && !fluid.isSource()) return true;
+        }
+        return false;
     }
 
     private void skipForLava(int rank) {
@@ -1009,6 +1153,565 @@ public class AreaMiner extends Module {
             lastLavaNoticeAt = at;
             Notify.send("Area Miner", "Lava near " + coords(at) + ", digging around it", false, false, false);
         }
+    }
+
+    // ---- Filling lava and water
+
+    /**
+     * Fills lava and water in and next to the area from where you stand, a block at a time: lava
+     * right beside you first, then the source blocks, nearest first, every one in reach before it
+     * digs on. Only sources: a block in what's flowing would hide the source behind it, and the
+     * flow dries up once its source is gone. A pool fills from where there's something to put a
+     * block against, the bottom row and the near side first, each block in giving the next one
+     * its face. Over more lava or water, sand or gravel if you've any: it drops to the bottom.
+     * What lands inside the area is mined out later with the rest; what's outside stays as a wall.
+     * Out of blocks, it buys a stack of sand off /ah. @return true while it's at it (the job's
+     * dropped and chosen afresh after, with the lava filled)
+     */
+    private boolean tickFill(LocalPlayer player, long now) {
+        boolean blocks = fillerCount(player) > 0 || buySand.get() && System.currentTimeMillis() >= noBuyUntil;
+        boolean lava = clearLava.get() && blocks;
+        boolean water = clearWater.get() && blocks;
+        if (lava != fillLava || water != fillWater) {
+            // Dug round again (or not) from the next look.
+            fillLava = lava;
+            fillWater = water;
+            lavaNear.clear();
+            evals.clear();
+        }
+        if (!lava && !water) {
+            fill = null;
+            return false;
+        }
+        boolean nowStocked = fillerCount(player) > 0;
+        if (nowStocked != stocked) {
+            stocked = nowStocked;
+            wantFiller = false;
+            lavaNear.clear();
+            evals.clear();
+        }
+        // Bought before it's dug into, not after: by the time a stack's come it's run a long way.
+        if (!stocked && wantFiller) return buySand(player);
+        lookForOpen(player, now);
+        if (now < fillRest) {
+            steering = Input.EMPTY;
+            return true;
+        }
+        if (fill != null && mc.level.getFluidState(fill.cell()).isEmpty()) fill = null;
+        // Lava about to run onto you comes first, even halfway through putting a block somewhere
+        // else: a block in front of it, or where there's nothing to put one against, a step back.
+        BlockPos feet = player.blockPosition();
+        // Lava a block or two off is a second or more away (it runs a block every second and a
+        // half): filling the sources it comes from goes on, and it's only stepped back from if
+        // there's none in reach.
+        if (fillLava && threatened(player, 3)) {
+            boolean close = threatened(player, 1);
+            FluidState at = fill == null ? null : mc.level.getFluidState(fill.cell());
+            boolean plugging = at != null && at.is(FluidTags.LAVA) && threat(feet, fill.cell(), at);
+            if (close && !plugging) fill = null;
+            if (close ? !plugging && !pluggable(player) : fill == null && findFill(player) == null) {
+                fillPath = null;
+                if (stepBack(player)) return true;
+            }
+        }
+        if (fill == null) {
+            if (!player.onGround() && !player.isInWater()) return fillPath != null && walkToFill(player, now);
+            Fill next = findFill(player);
+            if (next == null) return walkToFill(player, now);
+            fillPath = null;
+            int slot = fillerSlot(player, !mc.level.getFluidState(next.cell().below()).isEmpty());
+            if (slot == FILLER_MOVING) return true;
+            if (slot == FILLER_NO_ROOM) {
+                pause("No hotbar room for blocks to fill lava with: free a slot, then Resume");
+                return true;
+            }
+            if (slot == FILLER_NONE) return buySand(player);
+            fill = new Fill(next.cell(), next.against(), next.face(), next.aim().add(facePlaneJitter(next.face(), 0.1)), next.cost());
+            fillWith = slot;
+            fillSince = now;
+            if (phase != Phase.CHOOSE) resetPhase();
+            status = "Filling " + (mc.level.getFluidState(next.cell()).is(FluidTags.LAVA) ? "lava" : "water") + " at " + coords(next.cell());
+        }
+        steering = Input.EMPTY;
+        Inventory inventory = player.getInventory();
+        if (!filler(inventory.getItem(fillWith))) {
+            // That stack ran out: the next.
+            fill = null;
+            return true;
+        }
+        if (now - fillSince > FILL_TIMEOUT) {
+            fillPassed.put(fill.cell().asLong(), now + FILL_PASS);
+            fill = null;
+            return true;
+        }
+        if (inventory.getSelectedSlot() != fillWith) {
+            inventory.setSelectedSlot(fillWith);
+            slotReadyAt = now + 120_000_000L;
+        }
+        aimAt(fill.aim());
+        if (now < slotReadyAt) return true;
+        if (!(mc.hitResult instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return true;
+        // Any face beside the cell will do: at an angle the crosshair can land on the next one over.
+        BlockState clicked = mc.level.getBlockState(hit.getBlockPos());
+        if (!hit.getBlockPos().relative(hit.getDirection()).equals(fill.cell()) || clicked.hasBlockEntity()
+            || !clicked.isCollisionShapeFullBlock(mc.level, hit.getBlockPos())) return true;
+        if (mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit).consumesAction()) {
+            player.swing(InteractionHand.MAIN_HAND);
+            filled++;
+            if (fills.addTo(fill.cell().asLong(), 1) + 1 >= MAX_FILLS) giveUpFilling(fill.cell());
+            fill = null;
+            // A hit looked at while this was lava would take the new block out with the rest.
+            lavaNear.clear();
+            evals.clear();
+            fillRest = now + 150_000_000L + (long) (random.nextDouble() * 120_000_000L);
+        }
+        return true;
+    }
+
+    /** The lava or water to fill next from where you stand, or null if there's none in reach that a block can go into. */
+    private Fill findFill(LocalPlayer player) {
+        Vec3 eye = player.getEyePosition();
+        double reach = player.blockInteractionRange() - 0.25;
+        int r = (int) Math.ceil(reach);
+        int gap = lavaGap.get().intValue();
+        Region near = plan.target.bounds.grow(gap, gap);
+        BlockPos feet = player.blockPosition();
+        AABB body = player.getBoundingBox();
+        long now = System.nanoTime();
+        Fill best = null;
+        double bestScore = Double.MAX_VALUE;
+        BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dy = -r; dy <= r; dy++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    m.set(feet.getX() + dx, feet.getY() + 1 + dy, feet.getZ() + dz);
+                    FluidState fluid = mc.level.getFluidState(m);
+                    if (fluid.isEmpty()) continue;
+                    boolean lava = fluid.is(FluidTags.LAVA);
+                    if (lava ? !fillLava : !(fillWater && fluid.is(FluidTags.WATER))) continue;
+                    // Sources in the area or within the lava gap of it; what flows only when it's lava
+                    // about to run onto you, or, behind every source in reach, where it comes out of one.
+                    boolean touching = lava && threat(feet, m, fluid);
+                    boolean seal = !touching && !fluid.isSource() && near.contains(m) && besideSource(m, lava);
+                    // Last of all, lava that's run into the area: filled, it's ground to walk in on
+                    // over what's still running, up to sources out of reach from here.
+                    boolean flow = lava && !touching && !seal && !fluid.isSource() && plan.target.contains(m);
+                    if (!touching && !seal && !flow && !(fluid.isSource() && near.contains(m))) continue;
+                    long key = m.asLong();
+                    if (stubborn.contains(key) || fillPassed.get(key) > now) continue;
+                    if (!mc.level.getBlockState(m).canBeReplaced() || body.intersects(new AABB(m))) continue;
+                    // A spot filled before (water that came back once it was mined out) after the
+                    // ones behind it, or it'd be filled and mined over and over. Otherwise the one
+                    // with the squarest face to put it against: the bottom row first, against the
+                    // floor, and each block in gives the one above it a face.
+                    // Where it comes out of a source last: shut off, what ran out drains away and the
+                    // way back up to the source is clear again (it's mined open again from close up).
+                    double score = (touching ? -100 : seal ? 50 : flow ? 80 : 0) + (lava ? 0 : 10) + 3 * fills.get(key);
+                    if (score >= bestScore) continue;
+                    Fill f = placement(eye, reach, m);
+                    if (f == null || score + f.cost() >= bestScore) continue;
+                    best = f;
+                    bestScore = score + f.cost();
+                }
+            }
+        }
+        return best;
+    }
+
+    /** Lava or water running out of a source of its own kind beside it or right above it. */
+    private boolean besideSource(BlockPos pos, boolean lava) {
+        for (Direction d : Direction.values()) {
+            if (d == Direction.DOWN) continue;
+            FluidState next = mc.level.getFluidState(pos.relative(d));
+            if (next.isSource() && next.is(FluidTags.LAVA) == lava && !stubborn.contains(pos.relative(d).asLong())) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Lava that runs onto you next: beside your feet or head with flow left in it (lava at the end
+     * of its run, 2 deep, goes no further), or right over your head. Plugging any other would only
+     * hide the source feeding it, and it dries up once that's filled.
+     */
+    private static boolean threat(BlockPos feet, BlockPos q, FluidState fluid) {
+        int dx = q.getX() - feet.getX();
+        int dy = q.getY() - feet.getY();
+        int dz = q.getZ() - feet.getZ();
+        if (dx == 0 && dz == 0) return dy == 2;
+        return Math.abs(dx) + Math.abs(dz) == 1 && (dy == 0 || dy == 1) && fluid.getAmount() > 2;
+    }
+
+    /**
+     * Whether any lava or water it's filling, in or by the area and near you, is out in the open
+     * (air or what's running from it beside it) and not filled yet, or still running. Looked at
+     * twice a second.
+     */
+    private void lookForOpen(LocalPlayer player, long now) {
+        if (now < nextOpenLook) return;
+        nextOpenLook = now + 500_000_000L;
+        int gap = lavaGap.get().intValue();
+        Region near = plan.target.bounds.grow(gap, gap);
+        BlockPos feet = player.blockPosition();
+        boolean lava = false;
+        boolean water = false;
+        BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos n = new BlockPos.MutableBlockPos();
+        for (int x = Math.max(near.minX(), feet.getX() - 16); x <= Math.min(near.maxX(), feet.getX() + 16); x++) {
+            for (int y = Math.max(near.minY(), feet.getY() - 8); y <= Math.min(near.maxY(), feet.getY() + 8); y++) {
+                for (int z = Math.max(near.minZ(), feet.getZ() - 16); z <= Math.min(near.maxZ(), feet.getZ() + 16); z++) {
+                    FluidState fluid = mc.level.getFluidState(m.set(x, y, z));
+                    if (fluid.isEmpty() || stubborn.contains(m.asLong())) continue;
+                    boolean isLava = fluid.is(FluidTags.LAVA);
+                    if (isLava ? !fillLava || lava : !fillWater || water || !fluid.is(FluidTags.WATER)) continue;
+                    // Still running (from what was just filled, or what isn't yet): wait for it.
+                    if (!fluid.isSource()) {
+                        if (isLava) lava = true;
+                        else water = true;
+                        continue;
+                    }
+                    for (Direction d : Direction.values()) {
+                        n.setWithOffset(m, d);
+                        FluidState beside = mc.level.getFluidState(n);
+                        if (beside.isSource() || !mc.level.getBlockState(n).getCollisionShape(mc.level, n).isEmpty()) continue;
+                        if (isLava) lava = true;
+                        else water = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (lava != openLava || water != openWater) {
+            openLava = lava;
+            openWater = water;
+            lavaNear.clear();
+            evals.clear();
+        }
+    }
+
+    /**
+     * Lava that can run onto someone standing at {@code feet} from where it is now: followed out
+     * through open cells at foot and head height, three blocks at most, lava that's {@code d}
+     * blocks along gets there if it has more than {@code 2d} in it (it loses 2 a block; what drops
+     * onto a cell starts over at 8). A block to put in front of it waits for it to be right beside
+     * you; this sees it coming a block or two sooner, as lava next to it can fill up and run on in
+     * the same moment.
+     */
+    private boolean threatened(LocalPlayer player, int ahead) {
+        // Every cell you're over, not just the one under your middle: the last block of a run of
+        // lava burns as well as any, and standing off-centre your side's in the next one along.
+        AABB box = player.getBoundingBox();
+        int y = player.blockPosition().getY();
+        for (int x = Mth.floor(box.minX); x <= Mth.floor(box.maxX); x++) {
+            for (int z = Mth.floor(box.minZ); z <= Mth.floor(box.maxZ); z++) {
+                if (threatened(new BlockPos(x, y, z), ahead)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean threatened(BlockPos feet) {
+        return threatened(feet, 3);
+    }
+
+    private boolean threatened(BlockPos feet, int ahead) {
+        if (mc.level.getFluidState(feet.above(2)).is(FluidTags.LAVA)) return true;
+        for (int dy = 0; dy <= 1; dy++) {
+            BlockPos start = feet.above(dy);
+            if (mc.level.getFluidState(start).is(FluidTags.LAVA)) return true;
+            LongOpenHashSet seen = new LongOpenHashSet();
+            List<BlockPos> ring = new ArrayList<>();
+            ring.add(start);
+            seen.add(start.asLong());
+            for (int d = 1; d <= ahead && !ring.isEmpty(); d++) {
+                List<BlockPos> next = new ArrayList<>();
+                for (BlockPos at : ring) {
+                    for (Direction dir : Direction.Plane.HORIZONTAL) {
+                        BlockPos q = at.relative(dir);
+                        if (!seen.add(q.asLong())) continue;
+                        FluidState fluid = mc.level.getFluidState(q);
+                        int amount = fluid.is(FluidTags.LAVA) ? fluid.getAmount() : 0;
+                        if (mc.level.getFluidState(q.above()).is(FluidTags.LAVA)) amount = 8;
+                        if (amount > 2 * d) return true;
+                        if (amount == 0 && mc.level.getBlockState(q).getCollisionShape(mc.level, q).isEmpty()) next.add(q);
+                    }
+                }
+                ring = next;
+            }
+        }
+        return false;
+    }
+
+    /** Lava about to run onto you that a block can go in front of from where you stand. */
+    private boolean pluggable(LocalPlayer player) {
+        BlockPos feet = player.blockPosition();
+        Vec3 eye = player.getEyePosition();
+        double reach = player.blockInteractionRange() - 0.25;
+        AABB body = player.getBoundingBox();
+        BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+        for (int dy = 0; dy <= 2; dy++) {
+            for (Direction d : Direction.Plane.HORIZONTAL) {
+                m.setWithOffset(feet, dy == 2 ? 0 : d.getStepX(), dy, dy == 2 ? 0 : d.getStepZ());
+                FluidState fluid = mc.level.getFluidState(m);
+                if (!fluid.is(FluidTags.LAVA) || !threat(feet, m, fluid) || body.intersects(new AABB(m))) continue;
+                if (mc.level.getBlockState(m).canBeReplaced() && placement(eye, reach, m) != null) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Lava about to run onto you with nothing to put a block against: a step to the nearest spot
+     * beside you it isn't about to reach, away from it (it runs a block every second and a half;
+     * a step takes a quarter of one). @return true while stepping
+     */
+    private boolean stepBack(LocalPlayer player) {
+        BlockPos feet = player.blockPosition();
+        BlockPos best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    BlockPos c = feet.offset(dx, dy, dz);
+                    // The middle of the one you're in will do, if it's only your side over the next one.
+                    if (!Paths.passable(mc.level, c) || !Paths.passable(mc.level, c.above())) continue;
+                    if (mc.level.getBlockState(c.below()).getCollisionShape(mc.level, c.below()).isEmpty() || threatened(c)) continue;
+                    if (!mc.level.getFluidState(c).isEmpty() || !mc.level.getFluidState(c.above()).isEmpty()) continue;
+                    // Not through a wall: a step to a spot two off needs the one between clear too.
+                    BlockPos mid = feet.offset(Integer.signum(dx), 0, Integer.signum(dz));
+                    if ((Math.abs(dx) == 2 || Math.abs(dz) == 2) && (!Paths.passable(mc.level, mid) || !Paths.passable(mc.level, mid.above()))) continue;
+                    double dist = c.distSqr(feet);
+                    if (dist < bestDist) {
+                        best = c;
+                        bestDist = dist;
+                    }
+                }
+            }
+        }
+        if (best == null) return false;
+        steering = walk(player, Vec3.atBottomCenterOf(best), best.getY() > feet.getY() && player.onGround(), false);
+        status = "Stepping back from lava";
+        return true;
+    }
+
+    /**
+     * Caught in lava anyway: a step out onto the nearest spot beside you with nothing burning in it,
+     * before anything else (stopping there would only keep you in it). @return true while it's at it
+     */
+    private boolean escapeLava(LocalPlayer player) {
+        BlockPos feet = player.blockPosition();
+        if (!player.isInLava() && !mc.level.getFluidState(feet).is(FluidTags.LAVA) && !mc.level.getFluidState(feet.above()).is(FluidTags.LAVA)) return false;
+        BlockPos best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    BlockPos c = feet.offset(dx, dy, dz);
+                    if (c.equals(feet) || !Paths.passable(mc.level, c) || !Paths.passable(mc.level, c.above())) continue;
+                    if (mc.level.getBlockState(c.below()).getCollisionShape(mc.level, c.below()).isEmpty()) continue;
+                    double dist = c.distSqr(feet);
+                    if (dist < bestDist) {
+                        best = c;
+                        bestDist = dist;
+                    }
+                }
+            }
+        }
+        if (best == null) return false;
+        fill = null;
+        fillPath = null;
+        status = "Getting out of the lava";
+        steering = walk(player, Vec3.atBottomCenterOf(best), best.getY() > feet.getY() && player.onGround(), false);
+        return true;
+    }
+
+    /** Lava or water still running near you, that's being filled: it drains away in a few seconds once its sources are. */
+    private boolean draining(LocalPlayer player) {
+        BlockPos feet = player.blockPosition();
+        BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+        for (int dx = -8; dx <= 8; dx++) {
+            for (int dy = -4; dy <= 4; dy++) {
+                for (int dz = -8; dz <= 8; dz++) {
+                    FluidState fluid = mc.level.getFluidState(m.set(feet.getX() + dx, feet.getY() + dy, feet.getZ() + dz));
+                    if (fluid.isEmpty() || fluid.isSource()) continue;
+                    if (fillLava && fluid.is(FluidTags.LAVA) || fillWater && fluid.is(FluidTags.WATER)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * How to put a block into {@code cell} from {@code eye}: against the nearest plain full block
+     * beside it whose face toward it you can see (the crosshair goes through lava and water), or null.
+     */
+    private Fill placement(Vec3 eye, double reach, BlockPos cell) {
+        Fill best = null;
+        for (Direction d : Direction.values()) {
+            BlockPos against = cell.relative(d);
+            BlockState state = mc.level.getBlockState(against);
+            if (state.hasBlockEntity() || !state.isCollisionShapeFullBlock(mc.level, against)) continue;
+            Direction face = d.getOpposite();
+            // The nearest part of the face (off its edges): more reach than its middle.
+            Vec3 mid = Vec3.atCenterOf(cell).add(d.getStepX() * 0.5, d.getStepY() * 0.5, d.getStepZ() * 0.5);
+            Vec3 point = new Vec3(
+                d.getAxis() == Direction.Axis.X ? mid.x : Math.clamp(eye.x, mid.x - 0.25, mid.x + 0.25),
+                d.getAxis() == Direction.Axis.Y ? mid.y : Math.clamp(eye.y, mid.y - 0.25, mid.y + 0.25),
+                d.getAxis() == Direction.Axis.Z ? mid.z : Math.clamp(eye.z, mid.z - 0.25, mid.z + 0.25));
+            Vec3 toEye = eye.subtract(point);
+            if (toEye.x * face.getStepX() + toEye.y * face.getStepY() + toEye.z * face.getStepZ() <= 0.05) continue;
+            double dist = toEye.length();
+            // Seen edge-on, the crosshair slips onto the block beside it.
+            double square = (toEye.x * face.getStepX() + toEye.y * face.getStepY() + toEye.z * face.getStepZ()) / dist;
+            double cost = dist + 2 * (1 - square);
+            if (dist > reach || square < 0.1 || best != null && cost >= best.cost()) continue;
+            Vec3 inside = point.add(d.getStepX() * 0.05, d.getStepY() * 0.05, d.getStepZ() * 0.05);
+            BlockHitResult hit = mc.level.clip(new ClipContext(eye, inside, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, mc.player));
+            if (hit.getType() != HitResult.Type.BLOCK || !hit.getBlockPos().equals(against) || hit.getDirection() != face) continue;
+            best = new Fill(cell.immutable(), against.immutable(), face, point, cost);
+        }
+        return best;
+    }
+
+    /**
+     * Lava or water in or by the area that it can't fill from where it stands: a walk over to the
+     * nearest spot it can, safe to stand on (never next to lava), before it digs on. Looked for
+     * once a second at most. @return true while it's walking
+     */
+    private boolean walkToFill(LocalPlayer player, long now) {
+        if (fillPath == null) {
+            if (now < nextFillLook) return false;
+            nextFillLook = now + 1_000_000_000L;
+            if (!findFillSpot(player)) return false;
+            // Filling comes before digging on: what it's at is dropped and chosen afresh after.
+            if (phase != Phase.CHOOSE) resetPhase();
+            fillPathAt = 1;
+            fillWalkSince = now;
+            status = "Going over to fill " + (mc.level.getFluidState(fillGoal).is(FluidTags.LAVA) ? "lava" : "water") + " at " + coords(fillGoal);
+        }
+        steering = Input.EMPTY;
+        // Gone already, or there and still not in reach: something changed. Something else first.
+        if (mc.level.getFluidState(fillGoal).isEmpty() || fillPathAt >= fillPath.size() || now - fillWalkSince > FILL_WALK) {
+            if (!mc.level.getFluidState(fillGoal).isEmpty()) fillPassed.put(fillGoal.asLong(), now + FILL_PASS);
+            fillPath = null;
+            return false;
+        }
+        BlockPos node = fillPath.get(fillPathAt);
+        Vec3 target = Vec3.atBottomCenterOf(node);
+        double horizontal = Math.hypot(target.x - player.getX(), target.z - player.getZ());
+        boolean up = node.getY() > player.getY() + 0.5;
+        if (horizontal < 0.3 && (!up || player.getY() > node.getY() - 0.2)) {
+            fillPathAt++;
+            return true;
+        }
+        aimAt(Vec3.atCenterOf(fillGoal));
+        steering = walk(player, target, player.onGround() && up && horizontal < 1.4, false);
+        return true;
+    }
+
+    /** Where to walk to fill lava or water from: sets {@link #fillPath} and {@link #fillGoal}. @return false if there's nowhere */
+    private boolean findFillSpot(LocalPlayer player) {
+        double reach = player.blockInteractionRange() - 0.25;
+        int gap = lavaGap.get().intValue();
+        Region near = plan.target.bounds.grow(gap, gap);
+        BlockPos feet = player.blockPosition();
+        long now = System.nanoTime();
+        List<BlockPos> sources = new ArrayList<>();
+        BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+        for (int x = Math.max(near.minX(), feet.getX() - 24); x <= Math.min(near.maxX(), feet.getX() + 24); x++) {
+            for (int y = Math.max(near.minY(), feet.getY() - 12); y <= Math.min(near.maxY(), feet.getY() + 12); y++) {
+                for (int z = Math.max(near.minZ(), feet.getZ() - 24); z <= Math.min(near.maxZ(), feet.getZ() + 24); z++) {
+                    FluidState fluid = mc.level.getFluidState(m.set(x, y, z));
+                    if (fluid.isEmpty()) continue;
+                    if (fluid.is(FluidTags.LAVA) ? !fillLava : !(fillWater && fluid.is(FluidTags.WATER))) continue;
+                    // Sources, and where one runs out (shutting that off drains what ran).
+                    if (!fluid.isSource() && !besideSource(m, fluid.is(FluidTags.LAVA))) continue;
+                    long key = m.asLong();
+                    if (stubborn.contains(key) || fillPassed.get(key) > now || !mc.level.getBlockState(m).canBeReplaced()) continue;
+                    sources.add(m.immutable());
+                }
+            }
+        }
+        if (sources.isEmpty()) return false;
+        sources.sort(java.util.Comparator.comparingDouble(q -> q.distSqr(feet)));
+        if (sources.size() > 24) sources = sources.subList(0, 24);
+
+        Region around = near.grow(6, 4).union(new Region(feet.getX() - 6, feet.getY() - 6, feet.getZ() - 6, feet.getX() + 6, feet.getY() + 6, feet.getZ() + 6));
+        Paths ways = Paths.search(mc.level, feet, around, plan.target, 6_000);
+        double eye = eyeHeight();
+        BlockPos bestSpot = null;
+        BlockPos bestGoal = null;
+        double bestCost = Double.MAX_VALUE;
+        for (long packed : ways.spots()) {
+            BlockPos spot = BlockPos.of(packed);
+            double walkCost = ways.distance(spot);
+            if (walkCost >= bestCost) continue;
+            Vec3 eyeAt = new Vec3(spot.getX() + 0.5, spot.getY() + eye, spot.getZ() + 0.5);
+            for (BlockPos source : sources) {
+                if (Vec3.atCenterOf(source).distanceToSqr(eyeAt) > (reach + 0.9) * (reach + 0.9)) continue;
+                Fill f = placement(eyeAt, reach - 0.2, source);
+                if (f == null || walkCost + f.cost() >= bestCost) continue;
+                bestSpot = spot;
+                bestGoal = source;
+                bestCost = walkCost + f.cost();
+            }
+        }
+        if (bestSpot == null || bestSpot.equals(feet)) return false;
+        fillPath = ways.pathTo(bestSpot);
+        fillGoal = bestGoal;
+        return fillPath != null && fillPath.size() > 1;
+    }
+
+    /** Filled too often and still coming back: left alone, dug round like before. */
+    private void giveUpFilling(BlockPos cell) {
+        stubborn.add(cell.asLong());
+        lavaNear.clear();
+        evals.clear();
+        Notify.send("Area Miner", "Lava or water keeps coming back at " + coords(cell) + ", digging round it", false, false, false);
+    }
+
+    /** Filler blocks in the whole inventory, the drill's slot aside. */
+    private int fillerCount(LocalPlayer player) {
+        Inventory inventory = player.getInventory();
+        int n = 0;
+        for (int i = 0; i < 36; i++) {
+            if (i != drillSlot && filler(inventory.getItem(i))) n += inventory.getItem(i).getCount();
+        }
+        return n;
+    }
+
+    /**
+     * Lava or water to fill and no blocks to fill it with: a stack of sand off /ah ({@link
+     * AuctionBuyer}), the cheapest under your price. A go that comes to nothing isn't tried again
+     * for five minutes, and lava's dug round meanwhile. @return true while it's buying
+     */
+    private boolean buySand(LocalPlayer player) {
+        if (!buySand.get() || System.currentTimeMillis() < noBuyUntil) return false;
+        if (player.getInventory().getFreeSlot() < 0) {
+            Notify.send("Area Miner", "Not buying sand: no room for it. Digging round lava instead", false, false, false);
+            noBuyUntil = System.currentTimeMillis() + BUY_RETRY;
+            return false;
+        }
+        buyer.start(Items.SAND, SAND_STACK, sandMax.get() / SAND_STACK, sandMax.get(), ahConfirm.get(), true);
+        resetPhase();
+        status = "Buying sand off /ah to fill lava with";
+        return true;
+    }
+
+    private void tickBuy() {
+        if (buyer.tick() == AuctionBuyer.Result.RUNNING) return;
+        String what = AuctionBuyer.name(Items.SAND);
+        if (buyer.got() > 0) {
+            Notify.send("Area Miner", "Bought " + buyer.got() + " " + what + " for " + SchematicBuilder.dollars(buyer.spent()) + " to fill lava with",
+                false, false, false);
+        } else {
+            double cheapest = buyer.cheapestEach();
+            String why = buyer.full() ? "no room for it" : !Double.isNaN(cheapest)
+                ? "cheapest is " + SchematicBuilder.dollars(cheapest * SAND_STACK) + " a stack, your max is " + SchematicBuilder.dollars(sandMax.get())
+                : buyer.why().isEmpty() || buyer.why().startsWith("no ") ? "none listed" : buyer.why();
+            Notify.send("Area Miner", "Not buying " + what + ": " + why + ". Digging round lava instead", false, false, false);
+            noBuyUntil = System.currentTimeMillis() + BUY_RETRY;
+        }
+        resetPhase();
     }
 
     /** Nothing in front of the face: the crosshair can reach it. */
@@ -1242,6 +1945,14 @@ public class AreaMiner extends Module {
         if (now - emptySince < EMPTY_CONFIRM || !plan.counted()) return;
         emptySince = 0;
 
+        // Lava or water just filled still runs in what's dug out for a few seconds, and where it
+        // runs is no place to stand yet: wait for it to drain before calling anything out of reach.
+        if ((drainSince == 0 || now - drainSince < DRAIN_WAIT) && (fillLava || fillWater) && draining(player)) {
+            if (drainSince == 0) drainSince = now;
+            status = "Waiting for lava and water to drain";
+            return;
+        }
+
         // Spots that failed once get another go before anything is called out of reach.
         if ((!bannedHits.isEmpty() || !bannedCells.isEmpty()) && retries < MAX_RETRIES) {
             retries++;
@@ -1474,17 +2185,27 @@ public class AreaMiner extends Module {
      * inventory are swapped into an empty slot (or one with no tool in it) first; never the drill's.
      */
     private int fillerSlot(LocalPlayer player) {
+        return fillerSlot(player, false);
+    }
+
+    /** As {@link #fillerSlot(LocalPlayer)}; with {@code falling}, sand or gravel if there's any (it drops to the bottom of a pool). */
+    private int fillerSlot(LocalPlayer player, boolean falling) {
         Inventory inventory = player.getInventory();
+        if (falling) {
+            boolean any = false;
+            for (int i = 0; i < 36 && !any; i++) any = i != drillSlot && falls(inventory.getItem(i));
+            falling = any;
+        }
         int best = -1;
         for (int i = 0; i < 9; i++) {
-            if (i == drillSlot || !filler(inventory.getItem(i))) continue;
+            if (i == drillSlot || !filler(inventory.getItem(i)) || falling && !falls(inventory.getItem(i))) continue;
             if (best < 0 || inventory.getItem(i).getCount() > inventory.getItem(best).getCount()) best = i;
         }
         if (best >= 0) return best;
 
         int from = -1;
         for (int j = 9; j < 36; j++) {
-            if (!filler(inventory.getItem(j))) continue;
+            if (!filler(inventory.getItem(j)) || falling && !falls(inventory.getItem(j))) continue;
             if (from < 0 || inventory.getItem(j).getCount() > inventory.getItem(from).getCount()) from = j;
         }
         if (from < 0) return FILLER_NONE;
@@ -1501,14 +2222,19 @@ public class AreaMiner extends Module {
         return FILLER_MOVING;
     }
 
-    /** Plain full blocks nobody minds losing: stone and its kinds, cobble, netherrack, dirt. */
+    /** Plain full blocks nobody minds losing: stone and its kinds, cobble, netherrack, dirt, sand and gravel. */
     private static boolean filler(ItemStack stack) {
         if (!(stack.getItem() instanceof BlockItem item)) return false;
         BlockState state = item.getBlock().defaultBlockState();
         boolean plain = state.is(BlockTags.BASE_STONE_OVERWORLD) || state.is(BlockTags.BASE_STONE_NETHER) || state.is(BlockTags.DIRT)
             || state.is(Blocks.COBBLESTONE) || state.is(Blocks.COBBLED_DEEPSLATE) || state.is(Blocks.MOSSY_COBBLESTONE)
-            || state.is(Blocks.END_STONE) || state.is(Blocks.CALCITE);
+            || state.is(Blocks.END_STONE) || state.is(Blocks.CALCITE) || state.is(Blocks.SAND) || state.is(Blocks.RED_SAND) || state.is(Blocks.GRAVEL);
         return plain && state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+    }
+
+    /** Filler that drops when there's nothing under it: sand and gravel. */
+    private static boolean falls(ItemStack stack) {
+        return filler(stack) && ((BlockItem) stack.getItem()).getBlock() instanceof FallingBlock;
     }
 
     /** Blocks put down building back up after falls, this run. */
@@ -1970,7 +2696,11 @@ public class AreaMiner extends Module {
         for (BlockPos p : new BlockPos[] {feet, feet.above()}) {
             if (mc.level.getFluidState(p).is(FluidTags.LAVA)) return "Lava right on you at " + coords(p);
             for (Direction d : Direction.values()) {
-                if (mc.level.getFluidState(p.relative(d)).is(FluidTags.LAVA)) return "Lava right next to you at " + coords(p.relative(d));
+                BlockPos q = p.relative(d);
+                // Lava beside you, with lava being filled: plugged, or stepped back from, instead.
+                if (mc.level.getFluidState(q).is(FluidTags.LAVA) && !fillLava) {
+                    return "Lava right next to you at " + coords(q);
+                }
             }
         }
 

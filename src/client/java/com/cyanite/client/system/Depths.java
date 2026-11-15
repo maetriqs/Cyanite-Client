@@ -17,6 +17,11 @@ public final class Depths {
 
     /** The top of a chunk's made-up layers, or Y 0 where nothing's made up. */
     public static int floor(LevelChunk chunk) {
+        return Math.max(0, madeUpTop(chunk));
+    }
+
+    /** The top of a chunk's made-up layers, or the bottom of the world where nothing's made up. */
+    public static int madeUpTop(LevelChunk chunk) {
         LevelChunkSection[] sections = chunk.getSections();
         int top = chunk.getMinY();
         for (int i = 0; i < sections.length; i++) {
@@ -30,7 +35,7 @@ public final class Depths {
             if (other[0] > 0) break;
             top = chunk.getMinY() + (i + 1) * 16;
         }
-        return Math.max(0, top);
+        return top;
     }
 
     /** {@link #floor(LevelChunk)} for the chunk at a block, or 0 if that chunk isn't loaded. */

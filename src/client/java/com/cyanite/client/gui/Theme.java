@@ -7,6 +7,9 @@ public final class Theme {
     public static final int HEADER_HOVER = 0xFF1C2029;
     public static final int FIELD        = 0xFF0B0D11;
     public static final int TRACK        = 0xFF2A2F3A;
+    /** Outlines of check boxes, key caps and pills. */
+    public static final int EDGE         = 0xFF343A47;
+    public static final int KEY          = 0xFF1A1E26;
 
     public static final int TEXT         = 0xFFE9ECF1;
     public static final int TEXT_DIM     = 0xFF8A919D;
@@ -20,8 +23,9 @@ public final class Theme {
     private Theme() {
     }
 
+    /** The accent from settings; cycling through the rainbow while Acid Mode's on. */
     public static int accent() {
-        return 0xFF000000 | GuiSettings.ACCENT.get();
+        return com.cyanite.client.modules.render.AcidMode.accent(0xFF000000 | GuiSettings.ACCENT.get());
     }
 
     /** The accent lifted towards white, readable as text on the dark panels. */

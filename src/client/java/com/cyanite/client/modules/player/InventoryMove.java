@@ -2,6 +2,7 @@ package com.cyanite.client.modules.player;
 
 import com.cyanite.client.gui.BetaGuiScreen;
 import com.cyanite.client.gui.ClickGuiScreen;
+import com.cyanite.client.gui.SniperPanel;
 import com.cyanite.client.system.Category;
 import com.cyanite.client.system.Keys;
 import com.cyanite.client.system.Module;
@@ -38,8 +39,8 @@ public class InventoryMove extends Module {
     private boolean applies() {
         if (mc.screen instanceof ClickGuiScreen gui) return clickGui.get() && !gui.isTyping();
         if (mc.screen instanceof BetaGuiScreen gui) return clickGui.get() && !gui.isTyping();
-        // The creative search box takes typing, so movement keys stay with it.
-        return mc.screen instanceof AbstractContainerScreen<?> && !(mc.screen instanceof CreativeModeInventoryScreen);
+        // The creative search box and Auction Sniper's fields take typing, so movement keys stay with them.
+        return mc.screen instanceof AbstractContainerScreen<?> && !(mc.screen instanceof CreativeModeInventoryScreen) && !SniperPanel.typing();
     }
 
     private List<KeyMapping> keys() {

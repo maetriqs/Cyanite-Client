@@ -15,7 +15,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Block entities the server names, for {@link BlockEntityLeaks} (Leak Finder, Spawner Finder). Every
+ * Block entities the server names, for {@link BlockEntityLeaks} (Leak Finder, Spawner Finder, Deepslate Bypass). Every
  * hook is at TAIL: each handler first hands itself over to the game thread and throws on the netty one,
  * so only the game thread gets here, after the client has taken in what it was told.
  */

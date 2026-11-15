@@ -36,6 +36,11 @@ public class AutoClicker extends Module {
     }
 
     @Override
+    protected boolean ticksEarly() {
+        return true;
+    }
+
+    @Override
     public void onTick() {
         if (mc.screen != null || mc.player.isUsingItem() || !mc.options.keyAttack.isDown()) return;
         if (!(mc.hitResult instanceof EntityHitResult)) return;

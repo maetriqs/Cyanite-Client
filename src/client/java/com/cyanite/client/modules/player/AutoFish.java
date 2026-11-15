@@ -27,6 +27,11 @@ public class AutoFish extends Module {
     }
 
     @Override
+    protected boolean ticksEarly() {
+        return true;
+    }
+
+    @Override
     public void onTick() {
         if (mc.screen != null || !mc.player.getMainHandItem().is(Items.FISHING_ROD)) return;
 

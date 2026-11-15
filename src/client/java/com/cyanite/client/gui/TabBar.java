@@ -71,17 +71,21 @@ final class TabBar {
         int iy = (y + 2) * s;
         int ih = (HEIGHT - 4) * s;
         int ir = Math.max(0, r - 2 * s);
-        Render2D.glow(g, ix, iy, iw, ih, ir, 7 * s, Theme.alpha(accent, 55 * Theme.glow() * alpha));
-        Render2D.rect(g, ix, iy, iw, ih, ir, Theme.alpha(accent, 50 * alpha));
-        Render2D.rect(g, ix + 3 * s, iy + ih - Math.max(1, s / 2), iw - 6 * s, Math.max(1, s / 2), 0, Theme.alpha(accent, 220 * alpha));
-        Render2D.end(g);
-
         for (int i = 0; i < names.length; i++) {
             boolean over = Page.inside(mouseX, mouseY, tabX[i], y, tabW[i], HEIGHT);
             hover[i] = Anim.approach(hover[i], over ? 1 : 0, dt, 16);
-            if (over && i != selected) g.requestCursor(CursorTypes.POINTING_HAND);
+            if (hover[i] > 0.01f && i != selected) {
+                Render2D.rect(g, tabX[i] * s, iy, tabW[i] * s, ih, ir, Theme.alpha(0xFFFFFF, hover[i] * 14 * alpha));
+            }
+        }
+        Render2D.glow(g, ix, iy, iw, ih, ir, 7 * s, Theme.alpha(accent, 70 * Theme.glow() * alpha));
+        Render2D.rect(g, ix, iy, iw, ih, ir, Theme.alpha(Theme.mix(accent, 0xFF000000, 0.18f), 235 * alpha));
+        Render2D.end(g);
 
-            int color = i == selected ? Theme.accentText() : Theme.mix(Theme.TEXT_DIM, Theme.TEXT, hover[i]);
+        for (int i = 0; i < names.length; i++) {
+            if (hover[i] > 0.5f && i != selected) g.requestCursor(CursorTypes.POINTING_HAND);
+
+            int color = i == selected ? 0xFFFFFFFF : Theme.mix(Theme.TEXT_DIM, Theme.TEXT, hover[i]);
             Text.draw(g, names[i], tabX[i] + TAB_PAD, y + (HEIGHT - Text.CAP) / 2, Theme.fade(color, alpha));
         }
     }

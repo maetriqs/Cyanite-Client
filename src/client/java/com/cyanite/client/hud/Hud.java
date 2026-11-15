@@ -27,7 +27,9 @@ public final class Hud {
     public static final BoolSetting SHADOW = add(new BoolSetting("Text shadow", true));
     public static final BoolSetting HIDE_IN_F3 = add(new BoolSetting("Hide with F3", true));
 
-    public static final List<HudElement> ELEMENTS = List.of(new Watermark(), new ModuleList(), new RegionMap(), new StaffPanel(), new PerformancePanel(), new TargetHud(), new ToggleAlerts());
+    public static final List<HudElement> ELEMENTS = List.of(new Watermark(), new ModuleList(), new RegionMap(), new StaffPanel(), new PerformancePanel(), new TargetHud(),
+        // Before the pop-ups, so they show on top of the video.
+        new SubwaySurfers(), new ToggleAlerts(), new BasePicture());
 
     /** While the click GUI's HUD tab is open it draws the elements itself, so the normal pass skips them. */
     public static boolean editing;
@@ -41,6 +43,12 @@ public final class Hud {
     private static <S extends Setting<?>> S add(S setting) {
         SETTINGS.add(setting);
         return setting;
+    }
+
+    /** The element called {@code name}, as the HUD menu shows it (switch it with setEnabled), or null. */
+    public static HudElement element(String name) {
+        for (HudElement element : ELEMENTS) if (element.name.equals(name)) return element;
+        return null;
     }
 
     public static int unit() {
@@ -93,7 +101,8 @@ public final class Hud {
         com.cyanite.client.modules.world.build.StandIns.render2D(g);
         if (!editing) Macros.drawHud(g, screenWidth());
 
-        boolean hidden = editing || HIDE_IN_F3.get() && mc.getDebugOverlay().showDebugScreen();
+        boolean hidden = editing || HIDE_IN_F3.get() && mc.getDebugOverlay().showDebugScreen()
+            || com.cyanite.client.modules.render.Cinematic.hidesClientHud();
         if (!hidden) {
             int width = screenWidth();
             int height = screenHeight();
@@ -115,7 +124,12 @@ public final class Hud {
         json.add("settings", general);
 
         JsonObject elements = new JsonObject();
-        for (HudElement element : ELEMENTS) elements.add(element.name, element.save());
+        for (HudElement element : ELEMENTS) {
+            JsonObject saved = element.save();
+            // Switched on by Acid Mode only while it's on: saved as it was, so it isn't left on afterwards.
+            if (com.cyanite.client.modules.render.AcidMode.switchedOn(element)) saved.addProperty("enabled", false);
+            elements.add(element.name, saved);
+        }
         json.add("elements", elements);
         return json;
     }

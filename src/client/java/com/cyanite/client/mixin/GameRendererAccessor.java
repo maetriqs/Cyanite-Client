@@ -12,4 +12,7 @@ public interface GameRendererAccessor {
 
     @Accessor("resourcePool")
     com.mojang.blaze3d.resource.CrossFrameResourcePool cyanite$resourcePool();
+
+    @Accessor("globalSettingsUniform")
+    net.minecraft.client.renderer.GlobalSettingsUniform cyanite$globalSettings();
 }

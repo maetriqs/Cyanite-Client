@@ -246,8 +246,8 @@ final class MacrosPage extends Page {
         int textY = rowY + (18 - Text.CAP) / 2;
         Text.draw(g, keyName, x + w - 10 - keyW, textY, Theme.fade(macro.key == Macro.NO_KEY ? Theme.TEXT_FAINT : Theme.accentText(), a));
         int nameX = x + 10;
-        if (running) {
-            dot(g, x + 12, rowY + 9, 0xFF5BE07A, a);
+        if (running || Macros.recorder().macro() == macro) {
+            dot(g, x + 12, rowY + 9, running ? 0xFF5BE07A : Theme.DANGER, a);
             nameX += 8;
         }
         Text.draw(g, fit(macro.name, x + w - 16 - keyW - nameX), nameX, textY,
@@ -366,9 +366,17 @@ final class MacrosPage extends Page {
 
         int runY = rowY + FIELD + 6;
         boolean running = Macros.runner().macro() == macro;
+        boolean recording = Macros.recorder().macro() == macro;
         boolean inWorld = Minecraft.getInstance().player != null;
         if (running) button(g, "stop", x + PAD, runY, 60, 16, "Stop", true, mouseX, mouseY, dt, a, Macros::stop);
-        else button(g, "run", x + PAD, runY, 60, 16, "Run", inWorld && !macro.steps.isEmpty(), mouseX, mouseY, dt, a, () -> run(macro));
+        else button(g, "run", x + PAD, runY, 60, 16, "Run", inWorld && !recording && !macro.steps.isEmpty(), mouseX, mouseY, dt, a, () -> run(macro));
+        if (recording) {
+            button(g, "stoprec", x + PAD + 64, runY, 60, 16, "Stop rec", true, mouseX, mouseY, dt, a, Macros::stopRecording);
+        } else {
+            button(g, "record", x + PAD + 64, runY, 60, 16, "Record", inWorld && !running && macro.size() < Macro.MAX_BLOCKS,
+                mouseX, mouseY, dt, a, () -> record(macro));
+        }
+        String recorded = Macros.recorder().summary(macro);
         String line;
         int lineColor = Theme.TEXT_FAINT;
         if (statusLeft > 0) {
@@ -378,15 +386,21 @@ final class MacrosPage extends Page {
             MacroStep now = Macros.runner().current();
             line = now == null ? "Running" : "Running: " + now.summary();
             lineColor = Theme.accentText();
+        } else if (recording) {
+            line = "Recording: " + (macro.key == Macro.NO_KEY ? "Stop rec" : macro.keyName()) + " ends it";
+            lineColor = Theme.DANGER;
         } else if (Macros.runner().lastProblem() != null && Macros.runner().macro() == null) {
             line = "Last run: " + Macros.runner().lastProblem();
             lineColor = Theme.DANGER;
+        } else if (recorded != null) {
+            line = recorded;
+            lineColor = Theme.TEXT_DIM;
         } else if (!inWorld) {
-            line = "Join a world to run it";
+            line = "Join a world to run or record it";
         } else {
             line = macro.key == Macro.NO_KEY ? "Give it a key to run it in game" : "Press " + macro.keyName() + " in game to run it";
         }
-        Text.draw(g, fit(line, w - PAD * 2 - 72), x + PAD + 68, runY + (16 - Text.CAP) / 2, Theme.fade(lineColor, a));
+        Text.draw(g, fit(line, w - PAD * 2 - 136), x + PAD + 132, runY + (16 - Text.CAP) / 2, Theme.fade(lineColor, a));
 
         // The canvas.
         int cTop = runY + 16 + PAD;
@@ -1276,6 +1290,12 @@ final class MacrosPage extends Page {
     private void run(Macro macro) {
         Macros.start(macro);
         // Moving and looking wait while a menu is open, so get out of the way.
+        Minecraft.getInstance().setScreen(null);
+    }
+
+    /** Watches what you do in game and adds the blocks for it to the end of the script. */
+    private void record(Macro macro) {
+        Macros.record(macro);
         Minecraft.getInstance().setScreen(null);
     }
 

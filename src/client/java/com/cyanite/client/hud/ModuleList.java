@@ -146,6 +146,9 @@ public class ModuleList extends HudElement {
     }
 
     private int colorFor(int index, float time) {
+        // Acid Mode: a rainbow running down the list, whatever Color is set to.
+        int acid = com.cyanite.client.modules.render.AcidMode.hudColor(index);
+        if (acid != 0) return acid;
         return switch (color.get()) {
             case "Wave" -> {
                 float t = 0.5f + 0.5f * (float) Math.sin(time * 2.6f - index * 0.45f);
