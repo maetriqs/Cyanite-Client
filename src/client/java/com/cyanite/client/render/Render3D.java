@@ -5,6 +5,7 @@ import com.cyanite.client.mixin.RenderPipelinesAccessor;
 import com.cyanite.client.mixin.RenderTypeAccessor;
 import com.cyanite.client.system.Modules;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
+import com.mojang.blaze3d.pipeline.BlendFunction;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.platform.DepthTestFunction;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -38,11 +39,32 @@ import java.util.List;
  * go at the end of the main world pass. Positions are world coordinates.
  */
 public final class Render3D {
-    /** Glow is two faint passes under the edges, a wide one and a closer one, so it falls off softly. */
-    private static final float GLOW_OUTER_WIDTH = 6f;
-    private static final float GLOW_OUTER_ALPHA = 0.08f;
-    private static final float GLOW_INNER_WIDTH = 3f;
-    private static final float GLOW_INNER_ALPHA = 0.18f;
+    /**
+     * Glow is light added over the scene round a glowing edge, so overlapping glows brighten each other the
+     * way light does. It reaches this many line widths out to each side, and never less than GLOW_MIN pixels.
+     */
+    private static final float GLOW_REACH = 4.5f;
+    private static final float GLOW_MIN = 7f;
+    /** How strong it is next to the edge, for the edge's own alpha. */
+    private static final float GLOW_ALPHA = 0.55f;
+    /** Across a glow from the middle out: where each band ends (share of the reach) and how strong the light is there. */
+    private static final float[] GLOW_AT = {0, 0.2f, 0.52f, 1};
+    private static final float[] GLOW_FALL = {1, 0.48f, 0.15f, 0};
+    /** A glowing line also gets a thin, whiter core on top, like a neon tube. */
+    private static final float CORE_WIDTH = 0.45f;
+    private static final float CORE_WHITE = 0.55f;
+    private static final int BALL_SEGMENTS = 18;
+    private static final float[] BALL_COS = new float[BALL_SEGMENTS + 1];
+    private static final float[] BALL_SIN = new float[BALL_SEGMENTS + 1];
+
+    static {
+        for (int i = 0; i <= BALL_SEGMENTS; i++) {
+            double a = Math.PI * 2 * i / BALL_SEGMENTS;
+            BALL_COS[i] = (float) Math.cos(a);
+            BALL_SIN[i] = (float) Math.sin(a);
+        }
+    }
+
     /** How far along each edge a corner bracket reaches. */
     private static final float CORNER = 0.28f;
     /** ...but never shorter on screen than this many line widths (up to half the edge), so a far box keeps its brackets. */
@@ -54,14 +76,20 @@ public final class Render3D {
 
     private static RenderType lines;
     private static RenderType quads;
+    private static RenderType light;
+    private static RenderType lightDepth;
     private static MultiBufferSource.BufferSource buffers;
 
     private final Vec3 camera;
     private final Vector3fc forward;
+    private final Vector3fc left;
+    private final Vector3fc up;
     private final float partialTick;
     private final List<Box> boxes = new ArrayList<>();
     private final List<Line> segments = new ArrayList<>();
     private final List<Label> labels = new ArrayList<>();
+    private final List<Streak> streaks = new ArrayList<>();
+    private final List<Ball> balls = new ArrayList<>();
     /** Framebuffer pixels per 1080p pixel, and per block face-on one block ahead; set when the frame is drawn. */
     private float pixelScale;
     private double focal;
@@ -75,9 +103,22 @@ public final class Render3D {
     private record Label(Vec3 at, Quaternionf facing, float size, float x, float y, String text, int color, int background, boolean seeThrough) {
     }
 
-    private Render3D(Vec3 camera, Vector3fc forward, float partialTick) {
-        this.camera = camera;
-        this.forward = forward;
+    private record Streak(Vec3 from, Vec3 to, int color, int colorTo, double radius, boolean seeThrough) {
+    }
+
+    private record Ball(Vec3 at, double radius, int color, boolean seeThrough) {
+    }
+
+    /** Takes the pieces a box's edges are drawn in, ends in world coordinates. */
+    private interface EdgeSink {
+        void edge(double ax, double ay, double az, double bx, double by, double bz);
+    }
+
+    private Render3D(Camera cam, float partialTick) {
+        this.camera = cam.position();
+        this.forward = cam.forwardVector();
+        this.left = cam.leftVector();
+        this.up = cam.upVector();
         this.partialTick = partialTick;
     }
 
@@ -93,7 +134,7 @@ public final class Render3D {
      * @param fill    ARGB for the faces; alpha 0 skips them
      * @param outline ARGB for the edges; alpha 0 skips them
      * @param width   edge width in pixels at 1080p
-     * @param glow    adds a wide faint pass under the edges
+     * @param glow    soft light round the edges, and a whiter core along them
      */
     public void box(AABB box, int fill, int outline, float width, boolean glow) {
         boxes.add(new Box(box, fill, fill, outline, width, glow, false));
@@ -131,6 +172,21 @@ public final class Render3D {
      */
     public void text(Vec3 at, Quaternionf facing, float size, float x, float y, String text, int color, int background, boolean seeThrough) {
         labels.add(new Label(at, facing, size, x, y, text, color, background, seeThrough));
+    }
+
+    /**
+     * A soft ball of light facing the camera, brightest in the middle and gone {@code radius} blocks out.
+     * Its light is added to what's behind it, so glows that overlap brighten each other.
+     *
+     * @param seeThrough drawn over everything, walls included; otherwise hidden behind blocks
+     */
+    public void glow(Vec3 at, double radius, int argb, boolean seeThrough) {
+        if ((argb >>> 24) != 0 && radius > 0) balls.add(new Ball(at, radius, argb, seeThrough));
+    }
+
+    /** A soft streak of light from {@code from} to {@code to}, fading out {@code radius} blocks to each side. */
+    public void glowLine(Vec3 from, Vec3 to, int color, int colorTo, double radius, boolean seeThrough) {
+        if (((color | colorTo) >>> 24) != 0 && radius > 0) streaks.add(new Streak(from, to, color, colorTo, radius, seeThrough));
     }
 
     /** A line from the middle of the screen out to {@code to}, fading in from the crosshair. */
@@ -189,7 +245,7 @@ public final class Render3D {
         }
 
         Camera cam = mc.gameRenderer.getMainCamera();
-        Render3D frame = new Render3D(cam.position(), cam.forwardVector(), mc.getDeltaTracker().getGameTimeDeltaPartialTick(true));
+        Render3D frame = new Render3D(cam, mc.getDeltaTracker().getGameTimeDeltaPartialTick(true));
         try {
             Modules.render3D(frame);
             com.cyanite.client.visuals.Visuals.render3D(frame);
@@ -197,7 +253,7 @@ public final class Render3D {
             EspGlow.end();
         }
         com.cyanite.client.modules.world.build.StandIns.render(frame);
-        if (frame.boxes.isEmpty() && frame.segments.isEmpty() && frame.labels.isEmpty()) return;
+        if (frame.boxes.isEmpty() && frame.segments.isEmpty() && frame.labels.isEmpty() && frame.streaks.isEmpty() && frame.balls.isEmpty()) return;
 
         double focal = Projection.pixelsPerBlock();
         if (focal <= 0) focal = mc.getWindow().getHeight() / (2 * Math.tan(Math.toRadians(mc.options.fov().get()) / 2));
@@ -228,15 +284,30 @@ public final class Render3D {
         }
         buffers.endBatch(quads);
 
+        // The light first, so the crisp edges sit on top of it.
+        float strength = com.cyanite.client.visuals.Glow.strength();
+        if (strength > 0) {
+            light(buffers.getBuffer(light), pose, true, strength);
+            buffers.endBatch(light);
+            light(buffers.getBuffer(lightDepth), pose, false, strength);
+            buffers.endBatch(lightDepth);
+        }
+
         VertexConsumer edges = buffers.getBuffer(lines);
-        // Glow first, wide then close, so the crisp edges sit on top of it.
-        glow(edges, pose, GLOW_OUTER_WIDTH * pixelScale, GLOW_OUTER_ALPHA);
-        glow(edges, pose, GLOW_INNER_WIDTH * pixelScale, GLOW_INNER_ALPHA);
+        boolean cores = com.cyanite.client.visuals.Glow.cores();
         for (Box b : boxes) {
-            if ((b.outline >>> 24) != 0) edges(edges, pose, b, b.outline, b.width * pixelScale);
+            if ((b.outline >>> 24) == 0) continue;
+            float width = b.width * pixelScale;
+            edges(b, (ax, ay, az, bx, by, bz) -> boxEdge(edges, pose, ax, ay, az, bx, by, bz, b.outline, width));
+            if (b.glow && cores && width >= 2) {
+                int core = whiter(b.outline);
+                edges(b, (ax, ay, az, bx, by, bz) -> boxEdge(edges, pose, ax, ay, az, bx, by, bz, core, width * CORE_WIDTH));
+            }
         }
         for (Line l : segments) {
-            segment(edges, pose, l.from, l.to, l.color, l.colorTo, l.width * pixelScale);
+            float width = l.width * pixelScale;
+            segment(edges, pose, l.from, l.to, l.color, l.colorTo, width);
+            if (l.glow && cores && width >= 2) segment(edges, pose, l.from, l.to, whiter(l.color), whiter(l.colorTo), width * CORE_WIDTH);
         }
         buffers.endBatch(lines);
 
@@ -254,19 +325,126 @@ public final class Render3D {
         buffers.endBatch();
     }
 
-    /** One faint, wide pass under every glowing box edge and line. */
-    private void glow(VertexConsumer out, PoseStack.Pose pose, float widthScale, float alpha) {
-        for (Box b : boxes) {
-            if (b.glow && (b.outline >>> 24) != 0) edges(out, pose, b, faint(b.outline, alpha), b.width * widthScale);
+    /**
+     * Every glow of one kind: drawn over everything ({@code seeThrough}) or behind blocks. Glowing edges and
+     * lines get theirs here too, through walls like the edges themselves.
+     */
+    private void light(VertexConsumer out, PoseStack.Pose pose, boolean seeThrough, float strength) {
+        if (seeThrough) {
+            float size = com.cyanite.client.visuals.Glow.size();
+            for (Box b : boxes) {
+                if (!b.glow || (b.outline >>> 24) == 0) continue;
+                int c = faint(b.outline, GLOW_ALPHA * strength);
+                double reach = reach(b.width) * size;
+                edges(b, (ax, ay, az, bx, by, bz) -> streak(out, pose, ax, ay, az, bx, by, bz, c, c, reach, true));
+            }
+            for (Line l : segments) {
+                if (!l.glow) continue;
+                streak(out, pose, l.from.x, l.from.y, l.from.z, l.to.x, l.to.y, l.to.z,
+                    faint(l.color, GLOW_ALPHA * strength), faint(l.colorTo, GLOW_ALPHA * strength), reach(l.width) * size, true);
+            }
         }
-        for (Line l : segments) {
-            if (l.glow) segment(out, pose, l.from, l.to, faint(l.color, alpha), faint(l.colorTo, alpha), l.width * widthScale);
+        for (Streak s : streaks) {
+            if (s.seeThrough != seeThrough) continue;
+            streak(out, pose, s.from.x, s.from.y, s.from.z, s.to.x, s.to.y, s.to.z, faint(s.color, strength), faint(s.colorTo, strength), s.radius, false);
+        }
+        for (Ball b : balls) {
+            if (b.seeThrough == seeThrough) ball(out, pose, b, faint(b.color, strength));
         }
     }
 
+    /** How far a glow reaches to each side of an edge this wide, in framebuffer pixels. */
+    private float reach(float width) {
+        return Math.max(GLOW_MIN, width * GLOW_REACH) * pixelScale;
+    }
+
     private static int faint(int argb, float alpha) {
-        int a = Math.round((argb >>> 24) * alpha);
+        int a = Math.min(255, Math.round((argb >>> 24) * alpha));
         return a << 24 | (argb & 0xFFFFFF);
+    }
+
+    /** Part way to white, alpha kept: the core of a glowing line. */
+    private static int whiter(int argb) {
+        int r = argb >> 16 & 0xFF, g = argb >> 8 & 0xFF, b = argb & 0xFF;
+        r += Math.round((255 - r) * CORE_WHITE);
+        g += Math.round((255 - g) * CORE_WHITE);
+        b += Math.round((255 - b) * CORE_WHITE);
+        return argb & 0xFF000000 | r << 16 | g << 8 | b;
+    }
+
+    /**
+     * Light along a line, as bands either side of it that fade out, turned square to the way you see it at
+     * each end. {@code reach} is in framebuffer pixels when {@code pixels}, so it's as wide on screen near or far;
+     * otherwise in blocks.
+     */
+    private void streak(VertexConsumer out, PoseStack.Pose pose, double ax, double ay, double az, double bx, double by, double bz,
+                        int color, int colorTo, double reach, boolean pixels) {
+        double da = ahead(ax, ay, az), db = ahead(bx, by, bz);
+        if (da < NEAR && db < NEAR) return;
+        // Behind the camera there's no sensible place on screen: cut that end back to just in front of it.
+        if (da < NEAR || db < NEAR) {
+            double t = (NEAR - da) / (db - da);
+            double cx = ax + (bx - ax) * t, cy = ay + (by - ay) * t, cz = az + (bz - az) * t;
+            if (da < NEAR) {
+                ax = cx;
+                ay = cy;
+                az = cz;
+                da = NEAR;
+            } else {
+                bx = cx;
+                by = cy;
+                bz = cz;
+                db = NEAR;
+            }
+        }
+        float x1 = (float) (ax - camera.x), y1 = (float) (ay - camera.y), z1 = (float) (az - camera.z);
+        float x2 = (float) (bx - camera.x), y2 = (float) (by - camera.y), z2 = (float) (bz - camera.z);
+        float dx = x2 - x1, dy = y2 - y1, dz = z2 - z1;
+        if (dx * dx + dy * dy + dz * dz < 1e-10f) return;
+        // Square to the line and to the way from the eye to each end.
+        float[] sa = across(dx, dy, dz, x1, y1, z1), sb = across(dx, dy, dz, x2, y2, z2);
+        if (sa == null) sa = sb;
+        if (sb == null) sb = sa;
+        if (sa == null) return;
+        float wa = (float) (pixels ? reach * da / focal : reach), wb = (float) (pixels ? reach * db / focal : reach);
+        for (int side = -1; side <= 1; side += 2) {
+            for (int k = 0; k < GLOW_AT.length - 1; k++) {
+                float i0 = GLOW_AT[k] * side, i1 = GLOW_AT[k + 1] * side;
+                quad(out, pose,
+                    x1 + sa[0] * wa * i0, y1 + sa[1] * wa * i0, z1 + sa[2] * wa * i0, faint(color, GLOW_FALL[k]),
+                    x2 + sb[0] * wb * i0, y2 + sb[1] * wb * i0, z2 + sb[2] * wb * i0, faint(colorTo, GLOW_FALL[k]),
+                    x2 + sb[0] * wb * i1, y2 + sb[1] * wb * i1, z2 + sb[2] * wb * i1, faint(colorTo, GLOW_FALL[k + 1]),
+                    x1 + sa[0] * wa * i1, y1 + sa[1] * wa * i1, z1 + sa[2] * wa * i1, faint(color, GLOW_FALL[k + 1]));
+            }
+        }
+    }
+
+    /** The unit vector square to both (dx, dy, dz) and (vx, vy, vz), or null when they're in line. */
+    private static float[] across(float dx, float dy, float dz, float vx, float vy, float vz) {
+        float sx = dy * vz - dz * vy, sy = dz * vx - dx * vz, sz = dx * vy - dy * vx;
+        float length = (float) Math.sqrt(sx * sx + sy * sy + sz * sz);
+        if (length < 1e-7f) return null;
+        return new float[] {sx / length, sy / length, sz / length};
+    }
+
+    /** A disc facing the camera: a whiter middle, then rings of the colour fading out to its edge. */
+    private void ball(VertexConsumer out, PoseStack.Pose pose, Ball b, int color) {
+        if ((color >>> 24) == 0) return;
+        float cx = (float) (b.at.x - camera.x), cy = (float) (b.at.y - camera.y), cz = (float) (b.at.z - camera.z);
+        float r = (float) b.radius;
+        int middle = whiter(color);
+        for (int k = 0; k < GLOW_AT.length - 1; k++) {
+            float r0 = GLOW_AT[k] * r, r1 = GLOW_AT[k + 1] * r;
+            int c0 = k == 0 ? middle : faint(color, GLOW_FALL[k]), c1 = faint(color, GLOW_FALL[k + 1]);
+            for (int i = 0; i < BALL_SEGMENTS; i++) {
+                float ax = BALL_COS[i], ay = BALL_SIN[i], bx = BALL_COS[i + 1], by = BALL_SIN[i + 1];
+                quad(out, pose,
+                    cx + (left.x() * ax + up.x() * ay) * r0, cy + (left.y() * ax + up.y() * ay) * r0, cz + (left.z() * ax + up.z() * ay) * r0, c0,
+                    cx + (left.x() * ax + up.x() * ay) * r1, cy + (left.y() * ax + up.y() * ay) * r1, cz + (left.z() * ax + up.z() * ay) * r1, c1,
+                    cx + (left.x() * bx + up.x() * by) * r1, cy + (left.y() * bx + up.y() * by) * r1, cz + (left.z() * bx + up.z() * by) * r1, c1,
+                    cx + (left.x() * bx + up.x() * by) * r0, cy + (left.y() * bx + up.y() * by) * r0, cz + (left.z() * bx + up.z() * by) * r0, c0);
+            }
+        }
     }
 
     /** The six faces, {@code bottom} along the bottom shading to {@code top} along the top. */
@@ -291,7 +469,7 @@ public final class Render3D {
         out.addVertex(pose, dx, dy, dz).setColor(dc);
     }
 
-    private void edges(VertexConsumer out, PoseStack.Pose pose, Box b, int color, float width) {
+    private void edges(Box b, EdgeSink out) {
         AABB box = b.box;
         double x1 = box.minX, y1 = box.minY, z1 = box.minZ;
         double x2 = box.maxX, y2 = box.maxY, z2 = box.maxZ;
@@ -307,26 +485,26 @@ public final class Render3D {
                 double reach = minArm * Math.max(0, ahead(x, y, z));
                 double cx = arm(ex, reach), cy = arm(ey, reach), cz = arm(ez, reach);
                 double sx = x == x1 ? cx : -cx, sy = y == y1 ? cy : -cy, sz = z == z1 ? cz : -cz;
-                boxEdge(out, pose, x, y, z, x + sx, y, z, color, width);
-                boxEdge(out, pose, x, y, z, x, y + sy, z, color, width);
-                boxEdge(out, pose, x, y, z, x, y, z + sz, color, width);
+                out.edge(x, y, z, x + sx, y, z);
+                out.edge(x, y, z, x, y + sy, z);
+                out.edge(x, y, z, x, y, z + sz);
             }
             return;
         }
 
         // Bottom ring, top ring, then the four uprights.
-        boxEdge(out, pose, x1, y1, z1, x2, y1, z1, color, width);
-        boxEdge(out, pose, x2, y1, z1, x2, y1, z2, color, width);
-        boxEdge(out, pose, x2, y1, z2, x1, y1, z2, color, width);
-        boxEdge(out, pose, x1, y1, z2, x1, y1, z1, color, width);
-        boxEdge(out, pose, x1, y2, z1, x2, y2, z1, color, width);
-        boxEdge(out, pose, x2, y2, z1, x2, y2, z2, color, width);
-        boxEdge(out, pose, x2, y2, z2, x1, y2, z2, color, width);
-        boxEdge(out, pose, x1, y2, z2, x1, y2, z1, color, width);
-        boxEdge(out, pose, x1, y1, z1, x1, y2, z1, color, width);
-        boxEdge(out, pose, x2, y1, z1, x2, y2, z1, color, width);
-        boxEdge(out, pose, x2, y1, z2, x2, y2, z2, color, width);
-        boxEdge(out, pose, x1, y1, z2, x1, y2, z2, color, width);
+        out.edge(x1, y1, z1, x2, y1, z1);
+        out.edge(x2, y1, z1, x2, y1, z2);
+        out.edge(x2, y1, z2, x1, y1, z2);
+        out.edge(x1, y1, z2, x1, y1, z1);
+        out.edge(x1, y2, z1, x2, y2, z1);
+        out.edge(x2, y2, z1, x2, y2, z2);
+        out.edge(x2, y2, z2, x1, y2, z2);
+        out.edge(x1, y2, z2, x1, y2, z1);
+        out.edge(x1, y1, z1, x1, y2, z1);
+        out.edge(x2, y1, z1, x2, y2, z1);
+        out.edge(x2, y1, z2, x2, y2, z2);
+        out.edge(x1, y1, z2, x1, y2, z2);
     }
 
     /** A corner's arm along an edge this long: its share of the edge, at least {@code reach}, at most half of it. */
@@ -401,8 +579,29 @@ public final class Render3D {
             .withCull(false)
             .build();
 
+        // Glow adds its light to what's already there, rather than covering it.
+        RenderPipeline lightPipeline = RenderPipeline.builder(RenderPipelinesAccessor.cyanite$filledSnippet())
+            .withLocation(Identifier.fromNamespaceAndPath("cyanite_client", "pipeline/esp_light"))
+            .withVertexFormat(DefaultVertexFormat.POSITION_COLOR, VertexFormat.Mode.QUADS)
+            .withBlend(BlendFunction.LIGHTNING)
+            .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
+            .withDepthWrite(false)
+            .withCull(false)
+            .build();
+
+        RenderPipeline lightDepthPipeline = RenderPipeline.builder(RenderPipelinesAccessor.cyanite$filledSnippet())
+            .withLocation(Identifier.fromNamespaceAndPath("cyanite_client", "pipeline/world_light"))
+            .withVertexFormat(DefaultVertexFormat.POSITION_COLOR, VertexFormat.Mode.QUADS)
+            .withBlend(BlendFunction.LIGHTNING)
+            .withDepthTestFunction(DepthTestFunction.LEQUAL_DEPTH_TEST)
+            .withDepthWrite(false)
+            .withCull(false)
+            .build();
+
         lines = RenderTypeAccessor.cyanite$create("cyanite_esp_lines", RenderSetup.builder(linePipeline).createRenderSetup());
         quads = RenderTypeAccessor.cyanite$create("cyanite_esp_quads", RenderSetup.builder(quadPipeline).createRenderSetup());
+        light = RenderTypeAccessor.cyanite$create("cyanite_esp_light", RenderSetup.builder(lightPipeline).createRenderSetup());
+        lightDepth = RenderTypeAccessor.cyanite$create("cyanite_world_light", RenderSetup.builder(lightDepthPipeline).createRenderSetup());
         buffers = MultiBufferSource.immediate(new ByteBufferBuilder(1 << 18));
     }
 }

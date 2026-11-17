@@ -1,6 +1,7 @@
 package com.cyanite.client.modules.combat;
 
 import com.cyanite.client.system.Category;
+import com.cyanite.client.system.ClickTimer;
 import com.cyanite.client.system.Targets;
 import com.cyanite.client.system.WorldScan;
 import com.cyanite.client.system.Module;
@@ -21,7 +22,6 @@ import net.minecraft.world.phys.Vec3;
 
 import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
 
 public class KillAura extends Module {
     private final SliderSetting range = add(new SliderSetting("Range", 3.5, 1, 6, 0.1));
@@ -37,7 +37,7 @@ public class KillAura extends Module {
     private final BoolSetting weaponOnly = add(new BoolSetting("Weapon only", false));
     private final BoolSetting pauseOnUse = add(new BoolSetting("Pause while eating", true));
 
-    private long nextAttack;
+    private final ClickTimer clicks = new ClickTimer();
 
     public KillAura() {
         super(Category.COMBAT, "Kill Aura", "Attacks nearby entities");
@@ -57,6 +57,8 @@ public class KillAura extends Module {
     public void onTick() {
         if (mc.screen != null) return;
         if (pauseOnUse.get() && (mc.player.isUsingItem() || AutoGap.busy())) return;
+        // Another module is turning you for its own job this tick.
+        if (CrystalAura.busy() || ThrowAtFeet.busy()) return;
         if (weaponOnly.get() && !isWeapon(mc.player.getMainHandItem())) return;
 
         LivingEntity target = findTarget();
@@ -70,21 +72,16 @@ public class KillAura extends Module {
             face(target);
             if (!onIt) return;
         }
-        if (!ready()) return;
-
-        mc.gameMode.attack(mc.player, target);
-        mc.player.swing(InteractionHand.MAIN_HAND);
+        for (int i = swings(); i > 0; i--) {
+            mc.gameMode.attack(mc.player, target);
+            mc.player.swing(InteractionHand.MAIN_HAND);
+        }
     }
 
-    private boolean ready() {
-        if (timing.is("Cooldown")) return mc.player.getAttackStrengthScale(0.5f) >= 1f;
-
-        long now = System.currentTimeMillis();
-        if (now < nextAttack) return false;
-        // A little jitter so clicks aren't perfectly even.
-        double interval = 1000.0 / cps.get();
-        nextAttack = now + Math.round(interval * ThreadLocalRandom.current().nextDouble(0.85, 1.15));
-        return true;
+    private int swings() {
+        if (timing.is("Cooldown")) return mc.player.getAttackStrengthScale(0.5f) >= 1f ? 1 : 0;
+        double rate = cps.get();
+        return clicks.due(Math.max(1, rate - 2), rate + 2);
     }
 
     private LivingEntity findTarget() {

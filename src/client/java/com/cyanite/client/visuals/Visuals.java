@@ -62,7 +62,10 @@ public final class Visuals {
     public static void init() {
         section("General Visuals", "How everything looks, whatever you're doing.",
             TotemPop.GROUP, ItemColors.GROUP, LowFire.GROUP, Crosshair.GROUP, BlockHighlight.GROUP, Glint.GROUP,
-            DamageTint.GROUP, PotionHud.GROUP, Weather.GROUP, Particles.GENERAL, CustomHud.GROUP, ArmorDurability.GROUP);
+            DamageTint.GROUP, PotionHud.GROUP, Weather.GROUP, Particles.GENERAL, CustomHud.GROUP, ArmorDurability.GROUP, Glow.GROUP);
+        section("World", "The sky, the time of day and glowing touches on the world around you.",
+            TimeChanger.GROUP, SkyColors.GROUP, ItemGlow.GROUP, BreakProgress.GROUP, Halo.GROUP, Fireflies.GROUP, Glow.GROUP,
+            Weather.GROUP, BlockHighlight.GROUP);
         section("Crystal PvP", "End crystals, anchors of obsidian and bedrock, explosions and pops.",
             Crystals.MODEL, Crystals.ANIMATION, BlockColors.GROUP, Particles.EXPLOSION, Crystals.BEAM, TotemPop.GROUP,
             Crystals.HIGHLIGHT, Explosions.GROUP);
@@ -146,6 +149,49 @@ public final class Visuals {
         changed();
     }
 
+    /** Puts one group's settings back to their defaults in this profile; whether it's on stays as it is. */
+    public static void resetGroup(Group group) {
+        for (Setting<?> setting : group.settings) setting.reset();
+    }
+
+    /** Copies one group as it is now, on or off and every setting, into every other profile. */
+    public static void copyGroupToAll(Group group) {
+        JsonObject now = groupJson(group);
+        for (String profile : PROFILES) {
+            if (!profile.equals(active)) saved.computeIfAbsent(profile, k -> new JsonObject()).add(group.id, now.deepCopy());
+        }
+        changed();
+    }
+
+    /** True if any of the group's settings is off its default in this profile. */
+    public static boolean isChanged(Group group) {
+        for (Setting<?> setting : group.settings) {
+            if (!setting.toJson().equals(setting.defaultJson())) return true;
+        }
+        return false;
+    }
+
+    /** The profiles the group is switched on in, in order. */
+    public static List<String> onIn(Group group) {
+        List<String> on = new ArrayList<>();
+        for (String profile : PROFILES) {
+            boolean enabled = profile.equals(active) ? group.enabled.get()
+                : saved.get(profile) instanceof JsonObject p && p.get(group.id) instanceof JsonObject g
+                    && g.get(group.enabled.name) instanceof JsonElement e && e.isJsonPrimitive() && e.getAsBoolean();
+            if (enabled) on.add(profile);
+        }
+        return on;
+    }
+
+    /** The sections that list the group, in order. */
+    public static List<String> sectionsOf(Group group) {
+        List<String> names = new ArrayList<>();
+        for (Section section : SECTIONS) {
+            if (section.groups().contains(group)) names.add(section.name());
+        }
+        return names;
+    }
+
     /** Which profile Auto picks for what's in hand; null to stay where it is. */
     private static String profileFor(Weapon kind) {
         if (kind == null) return FALLBACK.get() ? GENERAL : null;
@@ -160,13 +206,15 @@ public final class Visuals {
 
     private static JsonObject snapshot() {
         JsonObject json = new JsonObject();
-        for (Group group : GROUPS) {
-            JsonObject g = new JsonObject();
-            g.add(group.enabled.name, group.enabled.toJson());
-            for (Setting<?> setting : group.settings) g.add(setting.name, setting.toJson());
-            json.add(group.id, g);
-        }
+        for (Group group : GROUPS) json.add(group.id, groupJson(group));
         return json;
+    }
+
+    private static JsonObject groupJson(Group group) {
+        JsonObject g = new JsonObject();
+        g.add(group.enabled.name, group.enabled.toJson());
+        for (Setting<?> setting : group.settings) g.add(setting.name, setting.toJson());
+        return g;
     }
 
     /** Defaults first, then whatever {@code json} has; null for all defaults. */
@@ -238,6 +286,7 @@ public final class Visuals {
         HitColor.tick();
         if (mc.player == null || mc.level == null) {
             WorldFx.clear();
+            Fireflies.clear();
             return;
         }
         if (AUTO.get()) {
@@ -249,6 +298,8 @@ public final class Visuals {
         run(Trails.ARROWS, () -> Trails.tick(true));
         run(BlockColors.GROUP, BlockColors::tick);
         run(SwordTrail.GROUP, SwordTrail::tick);
+        run(BreakProgress.GROUP, BreakProgress::tick);
+        run(Fireflies.GROUP, Fireflies::tick);
         Hands.tick();
         WorldFx.tick();
     }
@@ -267,6 +318,10 @@ public final class Visuals {
         run(ProjectileFx.GROUP, () -> ProjectileFx.render3D(render));
         run(TargetHighlight.GROUP, () -> TargetHighlight.render3D(render));
         run(DamageNumbers.GROUP, () -> DamageNumbers.render3D(render));
+        run(ItemGlow.GROUP, () -> ItemGlow.render3D(render));
+        run(BreakProgress.GROUP, () -> BreakProgress.render3D(render));
+        run(Halo.GROUP, () -> Halo.render3D(render));
+        run(Fireflies.GROUP, () -> Fireflies.render3D(render));
         WorldFx.render3D(render);
     }
 

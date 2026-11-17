@@ -36,6 +36,7 @@ public final class PotionImpact {
         if (RING.get()) {
             WorldFx.ring(center, color, 0.3, size, seconds, 3f);
             WorldFx.ring(center.add(0, 0.02, 0), color, 0.2, size * 0.6, seconds * 0.75f, 2f);
+            WorldFx.burst(center.add(0, 0.4, 0), color, size * 0.35, seconds * 0.6f);
         }
         if (DOME.get()) {
             for (int i = 1; i <= 3; i++) {

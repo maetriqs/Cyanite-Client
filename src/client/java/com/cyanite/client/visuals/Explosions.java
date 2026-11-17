@@ -28,6 +28,7 @@ public final class Explosions {
         double size = SIZE.get() * Math.max(2, radius * 2);
         float seconds = LENGTH.get().floatValue();
         if (RING.get()) WorldFx.ring(center.add(0, -0.4, 0), rgb, 0.4, size * 1.6, seconds, 3f);
+        if (RING.get() || SHOCKWAVE.get()) WorldFx.burst(center, rgb, size * 0.75, seconds * 0.6f);
         if (SHOCKWAVE.get()) {
             WorldFx.uprightRing(center, rgb, 0.3, size * 1.3, seconds * 0.8f, 2.5f);
             WorldFx.ring(center.add(0, 0.6, 0), rgb, 0.2, size, seconds * 0.6f, 2f);

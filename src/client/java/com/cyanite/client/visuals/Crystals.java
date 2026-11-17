@@ -148,6 +148,7 @@ public final class Crystals {
             int line = Visuals.argb(rgb, top ? 1 : 0.7);
             if (STYLE.is("Corners")) render.corners(box, fill, fill, line, top ? 2.5f : 1.8f, top);
             else render.box(box, fill, line, top ? 2.5f : 1.8f, top);
+            if (top) render.glow(box.getCenter(), 1.2, Visuals.argb(rgb, 0.4), true);
         }
     }
 

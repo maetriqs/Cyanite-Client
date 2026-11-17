@@ -16,6 +16,10 @@ record Rect(int x, int y, int w, int h) {
         return new Rect(left, top, Math.max(x + w, other.x + other.w) - left, Math.max(y + h, other.y + other.h) - top);
     }
 
+    boolean contains(double px, double py) {
+        return px >= x && px < x + w && py >= y && py < y + h;
+    }
+
     Rect grow(int amount) {
         return new Rect(x - amount, y - amount, w + amount * 2, h + amount * 2);
     }

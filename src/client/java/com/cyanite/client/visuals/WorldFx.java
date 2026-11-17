@@ -13,8 +13,8 @@ import java.util.Iterator;
 import java.util.List;
 
 /**
- * Short effects placed in the world by the Visuals features: rings that spread out on the ground, words that
- * rise and fade, and a flash over the screen. Each one lasts a second or two; there are never more than {@link #MAX}.
+ * Short effects placed in the world by the Visuals features: rings that spread out on the ground, glowing bursts
+ * of light, words that rise and fade, and a flash over the screen. Each one lasts a second or two; there are never more than {@link #MAX}.
  */
 public final class WorldFx {
     private static final int MAX = 96;
@@ -26,8 +26,12 @@ public final class WorldFx {
     private record Word(Vec3 at, String text, int color, float size, float seconds, long start) {
     }
 
+    private record Burst(Vec3 at, int color, double radius, float seconds, long start) {
+    }
+
     private static final List<Ring> rings = new ArrayList<>();
     private static final List<Word> words = new ArrayList<>();
+    private static final List<Burst> bursts = new ArrayList<>();
     private static int flashColor;
     private static float flashStrength;
     private static float flashSeconds;
@@ -44,6 +48,11 @@ public final class WorldFx {
     /** Like {@link #ring}, but standing up and facing you, like a shockwave seen side on. */
     public static void uprightRing(Vec3 center, int rgb, double from, double to, float seconds, float width) {
         add(rings, new Ring(center, rgb, from, to, seconds, width, System.nanoTime(), true));
+    }
+
+    /** A ball of light at {@code at} that swells to {@code radius} blocks in a blink and fades over {@code seconds}. */
+    public static void burst(Vec3 at, int rgb, double radius, float seconds) {
+        add(bursts, new Burst(at, rgb, radius, seconds, System.nanoTime()));
     }
 
     /** Text that rises from {@code at} and fades out. */
@@ -68,6 +77,7 @@ public final class WorldFx {
     public static void clear() {
         rings.clear();
         words.clear();
+        bursts.clear();
         flashStrength = 0;
     }
 
@@ -75,6 +85,7 @@ public final class WorldFx {
         long now = System.nanoTime();
         rings.removeIf(r -> age(r.start, now) > r.seconds);
         words.removeIf(w -> age(w.start, now) > w.seconds);
+        bursts.removeIf(b -> age(b.start, now) > b.seconds);
     }
 
     private static float age(long start, long now) {
@@ -82,9 +93,16 @@ public final class WorldFx {
     }
 
     static void render3D(Render3D render) {
-        if (rings.isEmpty() && words.isEmpty()) return;
+        if (rings.isEmpty() && words.isEmpty() && bursts.isEmpty()) return;
         long now = System.nanoTime();
         Camera camera = Minecraft.getInstance().gameRenderer.getMainCamera();
+        for (Burst b : bursts) {
+            float t = age(b.start, now) / b.seconds;
+            if (t >= 1) continue;
+            // Swells fast and fades slower, so it reads as a flash of light, not a growing ball.
+            float swell = 1 - (1 - Math.min(1, t * 4)) * (1 - Math.min(1, t * 4));
+            render.glow(b.at, b.radius * (0.45 + 0.55 * swell), Visuals.argb(b.color, (1 - t) * (1 - t) * 0.9), false);
+        }
         for (Ring r : rings) {
             float t = age(r.start, now) / r.seconds;
             if (t >= 1) continue;

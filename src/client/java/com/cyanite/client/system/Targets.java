@@ -63,10 +63,17 @@ public final class Targets {
         return box.clip(eyes, eyes.add(look.scale(range))).isPresent();
     }
 
-    /** Turns you to this look the short way round: a yaw that jumps a full circle gets flagged. */
+    /**
+     * Turns you to this look the short way round (a yaw that jumps a full circle gets flagged), in whole
+     * mouse counts at your sensitivity as MouseHandler turns you: a turn off that grid is a giveaway.
+     */
     public static void turnTo(float yaw, float pitch) {
-        mc.player.setYRot(mc.player.getYRot() + Mth.wrapDegrees(yaw - mc.player.getYRot()));
-        mc.player.setXRot(Mth.clamp(pitch, -90f, 90f));
+        double scale = HumanAim.countScale();
+        double perCount = scale * 0.15;
+        long x = Math.round(Mth.wrapDegrees(yaw - mc.player.getYRot()) / perCount);
+        long y = Math.round((Mth.clamp(pitch, -90f, 90f) - mc.player.getXRot()) / perCount);
+        mc.player.setYRot(mc.player.getYRot() + (float) (x * scale) * 0.15f);
+        mc.player.setXRot(Mth.clamp(mc.player.getXRot() + (float) (y * scale) * 0.15f, -90f, 90f));
     }
 
     /** How far, in degrees, {@code point} is from where you're looking. */

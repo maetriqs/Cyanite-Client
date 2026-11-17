@@ -79,6 +79,9 @@ public final class ProjectileFx {
                 Vec3 land = hit.getLocation();
                 AABB marker = new AABB(land.x - 0.35, land.y - 0.02, land.z - 0.35, land.x + 0.35, land.y + 0.05, land.z + 0.35);
                 render.box(marker, Visuals.argb(rgb, 0.3), Visuals.argb(rgb, 1), 2f, true);
+                // A soft pulse of light where it lands, so the spot shows from far off.
+                double pulse = 0.5 + 0.5 * Math.sin(System.nanoTime() / 1.6e8);
+                render.glow(land.add(0, 0.15, 0), 0.7 + 0.25 * pulse, Visuals.argb(rgb, 0.35 + 0.25 * pulse), true);
                 return;
             }
             if (i % 2 == 0) render.line(pos, next, Visuals.argb(rgb, 0.55), 1.5f, false);

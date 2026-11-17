@@ -135,7 +135,7 @@ public final class HumanAim {
     }
 
     /** What one mouse count is worth before MouseHandler's 0.15: the sensitivity curve. */
-    private static double countScale() {
+    static double countScale() {
         double f = mc.options.sensitivity().get() * 0.6 + 0.2;
         return f * f * f * 8;
     }

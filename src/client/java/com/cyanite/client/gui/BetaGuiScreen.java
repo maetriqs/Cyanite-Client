@@ -52,7 +52,7 @@ public class BetaGuiScreen extends Screen {
     private static final int WIDTH = 600;
     private static final int HEIGHT = 396;
     private static final Map<String, int[]> WIDE_PAGES = Map.of("area", new int[] {780, 410}, "macros", new int[] {900, 410},
-        "visuals", new int[] {720, 430});
+        "visuals", new int[] {940, 500});
     private static final int LIST_HEAD = 30;
     private static final int ROW = 26;
     private static final int GOLD = 0xFFFFC83D;

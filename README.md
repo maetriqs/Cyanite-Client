@@ -32,7 +32,7 @@ If Meteor Client, Wurst or Xaero's Minimap has left its settings in your game fo
 
 | Category | Modules |
 | --- | --- |
-| Combat | Aim Assist, Anti Bot, Auto Anchor, Auto Armor, Auto Clicker, Auto Gap, Auto Log, Auto Totem, Auto Weapon, Bow Aimbot, Criticals, Hitboxes, Kill Aura, Pop Counter, Surround, Trigger Bot, Velocity |
+| Combat | Aim Assist, Anti Bot, Auto Anchor, Auto Armor, Auto Clicker, Auto Gap, Auto Log, Auto Pot, Auto Totem, Auto Weapon, Auto XP, Bow Aimbot, Criticals, Crystal Aura, Hitboxes, Kill Aura, Pop Counter, Surround, Trigger Bot, Velocity |
 | Movement | Auto Elytra, Auto Trident, Auto Walk, Boat Fly, Flight, Jesus, No Clip, No Fall, No Slow, Safe Walk, Speed, Spider, Sprint, Step |
 | Render | Acid Mode, Block ESP, Breadcrumbs, Cinematic, ESP, F5 Camera, FOV Changer, Freecam, Fullbright, Lyrics, Motion Blur, Nametags, No Fog, No Hurt Cam, Pearl ESP, Search, Seed Xray, Small Totem, Storage ESP, Tracers, Villager ESP, Waypoints, Xray, Zoom |
 | Player | Auto Eat, Auto Fish, Auto Respawn, Chest Stealer, Fast Place, Hotbar Refill, Inventory Move |
@@ -44,13 +44,16 @@ Settings shown in **red** are ones anticheats catch. Use them only where that's 
 
 ## Visuals
 
-The **Visuals** tab (next to Modules in the classic menu, at the top of the Beta UI's sidebar) changes how the game looks, for you only: nothing it does is sent to the server. Each group has a switch and its own settings, sections fold open and shut, the search box finds a group by its name or any of its settings, and a live preview shows what each one does as you change it.
+The **Visuals** tab (next to Modules in the classic menu, at the top of the Beta UI's sidebar) changes how the game looks, for you only: nothing it does is sent to the server. Every group is a card with a live picture of what it does and its switch. Pick one to see it large with its settings, put it back to its defaults or copy it to every profile. Browse everything at once, only what's switched on, or one section; type anywhere to search by name or any setting; the arrow keys walk the cards and Enter flips the one you're on.
+
+Trails, rings, outlines and bursts glow: soft light added over the world round them, with a whiter core along glowing lines, and **Glow** turns all of it brighter or softer at once. The **World** section is for everyday play rather than fighting: the time of day you see, sky, fog and cloud colours, dropped items that glow with beams over the good ones, a glowing box filling the block you mine, a halo or neon hat in third person, and fireflies drifting round you.
 
 There are six visual profiles: General, Crystal PvP, Sword PvP, Axe PvP, Pot PvP and UHC / SMP. Each keeps its own settings, so every kind of fight can have its own crosshair, hit colours and particles. With **Switch by held item** on, the profile follows what's in your hand (crystals, a sword, an axe, splash potions, a bow). Everything is saved to `cyanite/visuals.json`.
 
 | Section | Groups |
 | --- | --- |
-| General Visuals | Totem Pop, Item Colors, Low Fire, Custom Crosshair, Block Highlight, Enchantment Glint, Damage Tint, Potion Effects, Weather Visuals, Custom Particles, Custom HUD, Armor Durability |
+| General Visuals | Totem Pop, Item Colors, Low Fire, Custom Crosshair, Block Highlight, Enchantment Glint, Damage Tint, Potion Effects, Weather Visuals, Custom Particles, Custom HUD, Armor Durability, Glow |
+| World | Time Changer, Sky Colors, Item Glow, Break Progress, Halo, Fireflies, Glow, Weather Visuals, Block Highlight |
 | Crystal PvP | End Crystal Size, Crystal Animation, Obsidian & Bedrock Colors, Explosion Particles, Crystal Beam, Totem Pop, Highlight Crystals, Custom Explosion Effects |
 | Sword PvP | Sword Swing Animation, Sword Trail, Sword Hit Particles, Critical Hit Particles, Custom Hit Colors, Damage Indicators, Sword Attack Animation |
 | Axe PvP | Axe Swing Animation, Shield Break Effects, Axe Hit Particles, Damage Indicators, Axe Attack Animation |

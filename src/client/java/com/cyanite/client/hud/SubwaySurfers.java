@@ -47,12 +47,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * A Subway Surfers clip on the HUD, Shorts style: tall (9:16), looping, no sound. A short clip comes with the
- * client and plays out of the box; a video of your own at cyanite/subway.mp4 (or .webm, .mkv) in the game folder
- * plays instead, and takes over within a second of being put there.
+ * A Subway Surfers clip on the HUD, Shorts style: tall (9:16), looping, no sound. No video comes with the client:
+ * it plays yours, cyanite/subway.mp4 (or .webm, .mkv) in the game folder, and takes it up within a second of it
+ * being put there. A ready-cut clip file, cyanite/subway_clip.bin, plays too when there's no video.
  *
- * <p>The built-in clip is JPEG frames already cut to size, decoded one at a time as they're shown, so it needs
- * nothing installed. Your own video needs ffmpeg, which decodes it (on the graphics card's video decoder where it
+ * <p>A clip file is JPEG frames already cut to size, decoded one at a time as they're shown, so it needs
+ * nothing installed. A video needs ffmpeg, which decodes it (on the graphics card's video decoder where it
  * can) into small frames, at the video's own rate up to 30 a second, cropped to fill the frame. Either way a
  * thread of ours hands the frames on in time, and the newest one goes to the graphics card when the HUD is drawn.
  * It only decodes while it's on screen: hidden (F1, F3, Stealth, the title screen), decoding waits, and after a
@@ -77,10 +77,11 @@ public class SubwaySurfers extends HudElement {
     /** The phone's edge round the video, in HUD units. */
     private static final int BEZEL = 2;
     private static final String NO_FFMPEG = "Needs ffmpeg: winget install ffmpeg, then restart the game";
-    /** The clip that comes with the client (made by dev/subway_clip.py). */
-    private static final String CLIP = "/assets/cyanite_client/video/subway_clip.bin";
-    /** {@link #failedOn} for the built-in clip. */
-    private static final String BUILT_IN = "built-in";
+    /** A ready-cut clip in the cyanite folder (the layout is in {@link Clip}). */
+    private static final String CLIP = "subway_clip.bin";
+    private static final String NO_VIDEO = "No video: put one at cyanite/subway.mp4 (needs ffmpeg)";
+    /** {@link #failedOn} for the clip file. */
+    private static final String BUILT_IN = "clip";
 
     /** Every ffmpeg this has started and not yet seen stop, so the game never leaves one behind. */
     private static final Set<Process> RUNNING = ConcurrentHashMap.newKeySet();
@@ -93,7 +94,7 @@ public class SubwaySurfers extends HudElement {
     private Decoder decoder;
     private long nextLook;
     private long retryAt;
-    /** File and version (or the built-in clip) that wouldn't play, so it isn't tried again until it changes. */
+    /** File and version (or the clip file) that wouldn't play, so it isn't tried again until it changes. */
     private String failedOn;
     private String problem;
     /** Seconds into the video to carry on from. */
@@ -196,7 +197,7 @@ public class SubwaySurfers extends HudElement {
             if (d.failure != null) {
                 problem = d.failure;
                 failedOn = d.failure.equals(NO_FFMPEG) ? "*" : d.file == null ? BUILT_IN : version(d.file);
-                LOGGER.warn("Subway Surfers: {} ({})", d.failure, d.file == null ? "built-in clip" : d.file.getFileName());
+                LOGGER.warn("Subway Surfers: {} ({})", d.failure, d.file == null ? CLIP : d.file.getFileName());
             } else if (!d.closedByUs) {
                 // ffmpeg went away by itself: try again in a moment rather than every frame.
                 retryAt = now + RETRY_NS;
@@ -205,7 +206,7 @@ public class SubwaySurfers extends HudElement {
             nextLook = 0;
         }
         if (d != null && d.file == null && now >= nextLook) {
-            // The built-in clip gives way as soon as a video of your own is put in the folder.
+            // The clip file gives way as soon as a video is put in the folder.
             nextLook = now + LOOK_NS;
             if (video() != null) {
                 resumeAt = d.position();
@@ -217,8 +218,12 @@ public class SubwaySurfers extends HudElement {
         if (d == null) {
             if (now < nextLook) return;
             nextLook = now + LOOK_NS;
-            // Your own video if there's one, otherwise the clip that comes with the client.
+            // Your video if there's one, otherwise the clip file, otherwise say what to do.
             Path file = video();
+            if (file == null && !Files.isRegularFile(Config.dir().resolve(CLIP))) {
+                problem = NO_VIDEO;
+                return;
+            }
             String version = file == null ? BUILT_IN : version(file);
             if (version.equals(failedOn) || file != null && "*".equals(failedOn) || now < retryAt) return;
             failedOn = null;
@@ -337,9 +342,9 @@ public class SubwaySurfers extends HudElement {
         boolean fill(ByteBuffer frame) throws IOException;
     }
 
-    /** One run of ffmpeg (or of the built-in clip), and the thread handing its frames on in time with the video. */
+    /** One run of ffmpeg (or of the clip file), and the thread handing its frames on in time with the video. */
     private final class Decoder extends Thread {
-        /** Null for the built-in clip. */
+        /** Null for the clip file. */
         final Path file;
         final double from;
         final AtomicReference<ByteBuffer> ready = new AtomicReference<>();
@@ -454,14 +459,14 @@ public class SubwaySurfers extends HudElement {
             });
         }
 
-        /** The built-in clip, round and round from where it was left, decoded a frame at a time. */
+        /** The clip file, round and round from where it was left, decoded a frame at a time. */
         private void playClip() throws InterruptedException {
             Clip clip;
             try {
                 clip = Clip.get();
             } catch (IOException e) {
-                LOGGER.warn("Subway Surfers: the built-in clip didn't load", e);
-                failure = "Can't play the built-in clip";
+                LOGGER.warn("Subway Surfers: cyanite/{} didn't load", CLIP, e);
+                failure = "Can't play cyanite/" + CLIP;
                 return;
             }
             fps = clip.fps();
@@ -473,8 +478,8 @@ public class SubwaySurfers extends HudElement {
                     return true;
                 });
             } catch (IOException e) {
-                LOGGER.warn("Subway Surfers: a frame of the built-in clip didn't decode", e);
-                failure = "Can't play the built-in clip";
+                LOGGER.warn("Subway Surfers: a frame of cyanite/{} didn't decode", CLIP, e);
+                failure = "Can't play cyanite/" + CLIP;
             }
         }
 
@@ -520,7 +525,8 @@ public class SubwaySurfers extends HudElement {
     }
 
     /**
-     * The clip that comes with the client: its frames as JPEGs (see dev/subway_clip.py for the layout), read once
+     * A clip file: "CYV1", width and height (shorts), fps x 1000, frame count, each frame's length (ints), then the
+     * frames as JPEGs, read once
      * and kept, then decoded one at a time with STB, which the game already has, as they're shown.
      */
     private record Clip(ByteBuffer data, int[] offsets, int[] lengths, double fps) {
@@ -534,8 +540,7 @@ public class SubwaySurfers extends HudElement {
         }
 
         private static Clip read() throws IOException {
-            try (InputStream raw = SubwaySurfers.class.getResourceAsStream(CLIP)) {
-                if (raw == null) throw new IOException(CLIP + " isn't in the jar");
+            try (InputStream raw = Files.newInputStream(Config.dir().resolve(CLIP))) {
                 DataInputStream in = new DataInputStream(new BufferedInputStream(raw));
                 if (in.readInt() != MAGIC) throw new IOException(CLIP + " isn't a clip");
                 int w = in.readUnsignedShort();

@@ -173,6 +173,7 @@ public final class TotemPop {
         int color = COLOR.get();
         WorldFx.ring(feet.add(0, 0.05, 0), color, 0.6, 3.2, 0.8f, 2.5f);
         WorldFx.uprightRing(feet.add(0, entity.getBbHeight() / 2, 0), color, 0.4, 2.6, 0.6f, 2f);
+        WorldFx.burst(feet.add(0, entity.getBbHeight() / 2, 0), color, 1.6, 0.7f);
         WorldFx.word(feet.add(0, entity.getBbHeight() + 0.5, 0), "POP", 0xFF000000 | color, 0.035f, 1.2f);
     }
 }

@@ -6,10 +6,14 @@ import com.cyanite.client.system.setting.BoolSetting;
 import com.cyanite.client.system.setting.SliderSetting;
 import net.minecraft.world.phys.Vec3;
 
-/** Scales the knockback the server applies to you. Hooked in from ClientPacketListenerMixin. */
+/**
+ * Scales the knockback the server applies to you. Hooked in from ClientPacketListenerMixin. Vertical
+ * is left whole by default: anticheats catch a hit that doesn't lift you far sooner than one that
+ * pushes you less far.
+ */
 public class Velocity extends Module {
     private final SliderSetting horizontal = add(new SliderSetting("Horizontal", 0, 0, 1, 0.05).percent());
-    private final SliderSetting vertical = add(new SliderSetting("Vertical", 0, 0, 1, 0.05).percent());
+    private final SliderSetting vertical = add(new SliderSetting("Vertical", 1, 0, 1, 0.05).percent());
     private final BoolSetting explosions = add(new BoolSetting("Explosions", true));
 
     public Velocity() {

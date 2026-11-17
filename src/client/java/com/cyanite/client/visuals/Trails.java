@@ -129,9 +129,11 @@ public final class Trails {
                 prev = p;
                 prevAlpha = alpha;
             }
-            // On to where it is this frame, so the line keeps up with it between ticks.
+            // On to where it is this frame, so the line keeps up with it between ticks, and a glow on the thing itself.
             if (prev != null && !trail.entity.isRemoved() && !stopped(trail.entity)) {
-                render.line(prev.at, trail.entity.getPosition(partial), Visuals.argb(trail.rgb, prevAlpha * 0.85), Visuals.argb(trail.rgb, 0.85), width, true);
+                Vec3 head = trail.entity.getPosition(partial);
+                render.line(prev.at, head, Visuals.argb(trail.rgb, prevAlpha * 0.85), Visuals.argb(trail.rgb, 0.85), width, true);
+                render.glow(head.add(0, trail.entity.getBbHeight() / 2, 0), 0.22 + width * 0.05, Visuals.argb(trail.rgb, 0.7), true);
             }
         }
     }

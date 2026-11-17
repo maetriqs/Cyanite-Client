@@ -33,7 +33,7 @@
       "enabled": false,
       "settings": {
         "Horizontal": 0.0,
-        "Vertical": 0.0,
+        "Vertical": 1.0,
         "Explosions": true,
         "Bind": -1,
         "Show in list": true

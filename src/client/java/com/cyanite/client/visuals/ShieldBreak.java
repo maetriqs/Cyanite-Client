@@ -54,6 +54,7 @@ public final class ShieldBreak {
         if (RING.get()) {
             WorldFx.ring(center.add(0, 0.05, 0), rgb, 0.4, 3.2, 0.6f, 3f);
             WorldFx.uprightRing(center.add(0, height * 0.55, 0), rgb, 0.3, 2.4, 0.45f, 2.5f);
+            WorldFx.burst(center.add(0, height * 0.55, 0), rgb, 1.2, 0.45f);
         }
         if (WORD.get() && holder != mc.player) WorldFx.word(center.add(0, height + 0.45, 0), "Shield broken", 0xFF000000 | rgb, 0.028f, 1.2f);
         if (FLASH.get() && holder != null && Combat.hitRecently(holder, 1)) WorldFx.flash(rgb, 0.25f, 0.35f);
